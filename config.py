@@ -12,10 +12,10 @@ EMBEDDING_MODEL_NAME = 'all-MiniLM-L6-v2' # Or another suitable model
 VECTOR_STORE_PATH = "./chroma_db_store" # Directory to persist ChromaDB data
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-GEMINI_MODEL_NAME = 'gemini-2.5-flash' # Or your preferred Gemini model
+GEMINI_MODEL_NAME = 'gemini-2.5-flash-preview-04-17' # Or your preferred Gemini model
 
 PDF_OUTPUT_FILENAME = 'analysis_report_langchain.pdf'
-RETRIEVER_TOP_K = 3 # How many documents to retrieve for context
+RETRIEVER_TOP_K = 6 # How many chunks to retrieve for context
 
 # Check if API key is set
 if not GEMINI_API_KEY:

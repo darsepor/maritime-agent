@@ -2,7 +2,7 @@
 from operator import itemgetter
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.prompts import ChatPromptTemplate
-from langchain_core.runnables import RunnablePassthrough, RunnableLambda
+from langchain_core.runnables import RunnablePassthrough, RunnableLambda, RunnableParallel
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.documents import Document # To access page_content
 
@@ -29,36 +29,56 @@ def format_docs(docs: list[Document]) -> str:
         formatted_docs.append(f"--- Document {i+1} (Title: {title}, Date: {date}) ---\n{doc.page_content}")
     return "\n\n".join(formatted_docs)
 
-def get_full_docs_from_chunks(retrieved_chunks: list[Document], original_doc_lookup: dict) -> str:
-    """Retrieves full document text using metadata from chunks and the lookup table."""
-    print(f"Retrieved {len(retrieved_chunks)} chunks. Fetching full documents...")
-    unique_full_docs = {}
+def get_full_docs_and_metadata(retrieved_chunks: list[Document], original_doc_lookup: dict) -> dict:
+    """Retrieves full doc text & metadata using chunks and lookup. Returns dict."""
+    print(f"Retrieved {len(retrieved_chunks)} chunks. Fetching full documents and metadata...")
+    unique_docs_data = {}
+    # Use a set to track unique lookup keys added
+    added_keys = set()
+
     for chunk in retrieved_chunks:
         title = chunk.metadata.get('title', 'N/A')
         date = chunk.metadata.get('date', 'N/A')
         lookup_key = (title, date)
-        if lookup_key in original_doc_lookup:
-            # Use the lookup key to store content, ensuring uniqueness
-            if lookup_key not in unique_full_docs:
-                unique_full_docs[lookup_key] = original_doc_lookup[lookup_key]
-                print(f"  - Added full document: Title='{title}', Date='{date}'")
-        else:
+
+        # Only process if we haven't added this original doc yet
+        if lookup_key in original_doc_lookup and lookup_key not in added_keys:
+            content, url = original_doc_lookup[lookup_key]
+            doc_data = {
+                'title': title,
+                'date': date.strip(), # Clean up whitespace from date
+                'url': url,
+                'content': content
+            }
+            unique_docs_data[lookup_key] = doc_data
+            added_keys.add(lookup_key)
+            print(f"  - Added full document: Title='{title}', Date='{date.strip()}'")
+        elif lookup_key not in original_doc_lookup:
             print(f"  - Warning: Could not find original document for chunk: Title='{title}', Date='{date}'")
 
-    # Combine the unique full document texts
-    context_string = "\n\n--- NEXT DOCUMENT ---\n\n".join(unique_full_docs.values())
+    # Combine the unique full document texts for context
+    context_strings = [
+        "\n\n--- NEXT DOCUMENT (Title: {title}, Date: {date}) ---\n\n{content}".format(
+            title=data['title'], date=data['date'], content=data['content']
+        ) for data in unique_docs_data.values()
+    ]
+    context_string = "".join(context_strings)
+
+    analyzed_metadata = list(unique_docs_data.values()) # List of dicts for PDF
+
     if not context_string:
         print("Warning: No full documents could be fetched for context.")
-        # Fallback: maybe return chunk text? Or empty string?
-        # Returning concatenated chunk text as fallback:
         print("Falling back to using chunk text for context.")
-        return "\n\n---\n\n".join([chunk.page_content for chunk in retrieved_chunks])
+        context_string = "\n\n---\n\n".join([chunk.page_content for chunk in retrieved_chunks])
+        # Provide minimal metadata based on chunks if possible
+        analyzed_metadata = [{'title': c.metadata.get('title', 'N/A'), 'date': c.metadata.get('date', 'N/A').strip(), 'url': c.metadata.get('url', '#'), 'content': '[Chunk Content Only]'} for c in retrieved_chunks]
 
-    print(f"Combined {len(unique_full_docs)} unique full documents for context.")
-    return context_string
 
-def create_rag_chain(retriever, llm, original_doc_lookup):
-    """Creates the RAG chain that retrieves chunks but uses full docs for context."""
+    print(f"Combined {len(unique_docs_data)} unique full documents for context.")
+    return {"context_str": context_string, "analyzed_metadata": analyzed_metadata}
+
+def create_rag_chain(retriever, llm):
+    """Creates RAG chain outputting analysis and metadata."""
     template = """
     You are an assistant tasked with analyzing blog posts.
     Use the following full blog posts (retrieved based on query relevance) to answer the question.
@@ -75,33 +95,45 @@ def create_rag_chain(retriever, llm, original_doc_lookup):
     """
     prompt = ChatPromptTemplate.from_template(template)
 
-    # Chain definition using LCEL (LangChain Expression Language)
-    rag_chain = (
-        # This dictionary passes the question to the retriever and also forwards it
-        # along with the original_doc_lookup to the next step.
-        {
-            "retrieved_chunks": itemgetter("question") | retriever,
-            "question": itemgetter("question"),
-            "original_doc_lookup": itemgetter("original_doc_lookup")
-        }
-        # Now, take the output dict and process it
-        | RunnableLambda(
-            lambda x: get_full_docs_from_chunks(x["retrieved_chunks"], x["original_doc_lookup"])
-        ).with_config(run_name="FetchFullDocs") # Assign context to the result
-        | RunnablePassthrough.assign(question=itemgetter("question")) # Re-add question for the prompt
-        | { "context": RunnablePassthrough(), "question": itemgetter("question") } # Format for prompt
-        | prompt
-        | llm
-        | StrOutputParser()
+    retrieve_chunks = itemgetter("question") | retriever
+
+    # Renamed function and updated lambda
+    create_context_and_metadata = RunnableLambda(
+        lambda x: get_full_docs_and_metadata(x["retrieved_chunks"], x["original_doc_lookup"]),
+        name="FetchFullDocsAndMetadata"
     )
 
-    # We need to invoke this chain slightly differently now,
-    # passing the necessary inputs in a dictionary.
-    # The run_analysis_pipeline in main.py handles this implicitly
-    # by how create_rag_chain is structured, but the underlying invoke needs a dict.
+    # Define the final chain structure
+    rag_chain = (
+        RunnableParallel(
+            {
+                "retrieved_chunks": retrieve_chunks,
+                "question": itemgetter("question"),
+                "original_doc_lookup": itemgetter("original_doc_lookup"),
+            }
+        )
+        # Step 2: Generate context string and metadata list
+        | RunnableParallel(
+            {
+                "result_from_fetch": create_context_and_metadata,
+                "question": itemgetter("question"), # Pass question through
+            }
+        )
+        # Step 3: Prepare input for the LLM prompt and pass metadata along
+        | RunnableParallel(
+            {
+                "prompt_input": RunnableLambda(lambda x: {"context": x["result_from_fetch"]["context_str"], "question": x["question"]}),
+                "analyzed_metadata": RunnableLambda(lambda x: x["result_from_fetch"]["analyzed_metadata"])
+            }
+        )
+        # Step 4: Call the LLM and combine its output with the metadata
+        | RunnableParallel(
+            {
+                "analysis": itemgetter("prompt_input") | prompt | llm | StrOutputParser(),
+                "analyzed_metadata": itemgetter("analyzed_metadata") # Pass metadata through
+            }
+        )
+    )
 
-    # Example of how the dictionary is built before the chain internally:
-    # invoke_input = {"question": user_query, "original_doc_lookup": original_doc_lookup}
-
-    print("RAG chain (full doc context) created.")
+    print("RAG chain (outputting dict: analysis, analyzed_metadata) created.")
     return rag_chain 

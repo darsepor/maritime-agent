@@ -1,7 +1,8 @@
 # data_loader.py
 from langchain_community.document_loaders.csv_loader import CSVLoader
 from langchain.text_splitter import RecursiveCharacterTextSplitter
-from config import CSV_FILE_PATH, CSV_CONTENT_COLUMN, CSV_METADATA_COLUMNS
+from langchain_core.documents import Document # Import Document base class
+from config import CSV_FILE_PATH, CSV_CONTENT_COLUMN
 
 # Define splitter configuration (can be moved to config.py if preferred)
 CHUNK_SIZE = 1000
@@ -23,39 +24,72 @@ def split_documents(documents):
     return split_docs
 
 def load_and_chunk_documents():
-    """Loads documents from CSV, splits them, and returns both originals and chunks."""
-    print(f"Loading documents from: {CSV_FILE_PATH}")
+    """Loads documents from CSV, ensures clean page_content, splits, returns originals and chunks."""
+    print(f"Loading raw data from: {CSV_FILE_PATH}")
+
+    # Define ALL columns you want to load from the CSV header
+    # Ensure these names match your CSV header exactly
+    EXPECTED_CSV_COLUMNS = ['title', 'text', 'keywords', 'segment', 'date', 'url']
+
     loader = CSVLoader(
         file_path=CSV_FILE_PATH,
-        source_column=CSV_CONTENT_COLUMN, # Which column becomes Document.page_content
-        metadata_columns=CSV_METADATA_COLUMNS, # Other columns become metadata
-        encoding='utf-8', # Specify encoding if needed
-        csv_args={
-            'delimiter': ',',
-            'quotechar': '"',
-            # Add other pandas read_csv args if necessary
-        }
+        # Load all expected columns into metadata initially
+        metadata_columns=EXPECTED_CSV_COLUMNS,
+        encoding='utf-8',
+        csv_args={'delimiter': ',', 'quotechar': '"'}
     )
-    original_documents = []
-    chunked_documents = []
-    try:
-        original_documents = loader.load()
-        print(f"Loaded {len(original_documents)} original documents.")
-        if not original_documents:
-            print("Warning: No documents loaded from CSV. Check CSV format and content.")
-            return original_documents, chunked_documents # Return empty lists
 
-        # Split the loaded documents
-        chunked_documents = split_documents(original_documents)
-        return original_documents, chunked_documents
+    original_documents_cleaned = []
+    chunked_documents = []
+
+    try:
+        raw_loaded_docs = loader.load()
+        print(f"Loaded {len(raw_loaded_docs)} raw rows.")
+        if not raw_loaded_docs:
+            print("Warning: No documents loaded from CSV. Check CSV format and content.")
+            return [], []
+
+        # --- Manually create clean Document objects --- 
+        for i, raw_doc in enumerate(raw_loaded_docs):
+            # Explicitly get the page content from the designated column
+            content = raw_doc.metadata.get(CSV_CONTENT_COLUMN, '')
+
+            # Create metadata dict from all *other* expected columns
+            metadata = {}
+            for col in EXPECTED_CSV_COLUMNS:
+                if col != CSV_CONTENT_COLUMN:
+                    metadata[col] = raw_doc.metadata.get(col, 'N/A') # Use N/A if column missing in a row
+
+            # Add row number as metadata for potential debugging
+            metadata['original_row'] = i
+
+            # Check if content is valid
+            if not content or not isinstance(content, str):
+                 print(f"Warning: Row {i} has missing or invalid content in '{CSV_CONTENT_COLUMN}'. Skipping.")
+                 continue
+
+            # Create the cleaned document
+            clean_doc = Document(page_content=content, metadata=metadata)
+            original_documents_cleaned.append(clean_doc)
+        # --- End manual creation --- 
+
+        print(f"Processed {len(original_documents_cleaned)} valid documents.")
+        if not original_documents_cleaned:
+             return [], [] # Return empty lists if no valid docs processed
+
+        # Split the cleaned documents
+        chunked_documents = split_documents(original_documents_cleaned)
+        return original_documents_cleaned, chunked_documents
 
     except FileNotFoundError:
         print(f"Error: CSV file not found at {CSV_FILE_PATH}")
-        return [], [] # Return empty lists
+        return [], []
+    except KeyError as e:
+        print(f"Error processing CSV row {i}: Missing expected column '{e}'. Check CSV header and EXPECTED_CSV_COLUMNS in data_loader.py.")
+        return original_documents_cleaned, [] # Return what was processed so far
     except Exception as e:
-        print(f"Error loading or splitting CSV: {e}")
-        # Potentially check specific columns existence errors
-        return original_documents, []
+        print(f"Error loading or processing CSV: {e}")
+        return original_documents_cleaned, []
 
 # Optional: Add text splitting logic here if posts are very long - REMOVED, now integrated above
 # from langchain.text_splitter import RecursiveCharacterTextSplitter
