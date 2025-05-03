@@ -15,7 +15,8 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 GEMINI_MODEL_NAME = 'gemini-2.5-flash-preview-04-17' # Or your preferred Gemini model
 
 PDF_OUTPUT_FILENAME = 'analysis_report_langchain.pdf'
-RETRIEVER_TOP_K = 6 # How many chunks to retrieve for context
+RETRIEVER_TOP_K = 3 # How many documents to retrieve for context
+LOOKUP_FILE_PATH = "./original_doc_lookup.pkl" # Path for pickled lookup dict
 
 # Check if API key is set
 if not GEMINI_API_KEY:

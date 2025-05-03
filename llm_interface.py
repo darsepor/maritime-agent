@@ -80,10 +80,10 @@ def get_full_docs_and_metadata(retrieved_chunks: list[Document], original_doc_lo
 def create_rag_chain(retriever, llm):
     """Creates RAG chain outputting analysis and metadata."""
     template = """
-    You are an assistant tasked with analyzing blog posts.
-    Use the following full blog posts (retrieved based on query relevance) to answer the question.
+    You are an assistant tasked with analyzing resources related to the maritime industry in the Nordic region.
+    Use the following full documents (retrieved based on query relevance) to answer the question.
     If you don't know the answer based on these posts, just say that you don't know.
-    Keep the answer concise and directly related to the question.
+    Keep the answer concise and directly related to the question. But do explore and be creative if seems appropriate.
 
     CONTEXT:
     {context} # This will be the full documents

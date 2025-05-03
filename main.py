@@ -1,57 +1,68 @@
 # main.py
 import sys
-import datetime # For report date
-from config import PDF_OUTPUT_FILENAME, RETRIEVER_TOP_K
-# Updated: data_loader now returns originals and chunks
-from data_loader import load_and_chunk_documents
-from vector_store_utils import get_embedding_function, create_or_load_vector_store, get_retriever
+import os # For checking file existence
+import datetime
+import traceback
+
+# Use LangChain interface for loading persistent store
+from langchain_community.vectorstores import Chroma
+
+from config import PDF_OUTPUT_FILENAME, RETRIEVER_TOP_K, VECTOR_STORE_PATH, LOOKUP_FILE_PATH
+# Removed data_loader import as it's no longer used here
+from vector_store_utils import get_embedding_function, get_retriever # Removed create_or_load
 from llm_interface import get_llm, create_rag_chain
 from pdf_generator import create_pdf
-import traceback # For printing traceback on error
+from pickle_utils import load_pickle # Utility for loading the lookup dict
 
 def run_analysis_pipeline(query: str):
-    """Runs the full RAG pipeline for a given query."""
-    print("\n--- Starting Analysis Pipeline ---")
+    """Runs the RAG pipeline using a pre-built vector store and lookup file."""
+    print("\n--- Starting Analysis Pipeline (using pre-built store) ---")
 
-    # 1. Initialize Embeddings
+    # --- Check if required pre-built files exist --- 
+    if not os.path.exists(VECTOR_STORE_PATH) or not os.listdir(VECTOR_STORE_PATH):
+        print(f"Error: Vector store not found or empty at {VECTOR_STORE_PATH}.")
+        print("Please run 'python build_vector_store.py' first.")
+        return
+    if not os.path.exists(LOOKUP_FILE_PATH):
+        print(f"Error: Original document lookup file not found at {LOOKUP_FILE_PATH}.")
+        print("Please run 'python build_vector_store.py' first.")
+        return
+    # --- End Check --- 
+
+    # 1. Initialize Embeddings (needed to load Chroma store)
     try:
         embeddings = get_embedding_function()
     except Exception as e:
         print(f"Failed to initialize embedding model: {e}")
         return
 
-    # 2. Load Originals and Chunk Documents
-    original_docs, chunked_docs = load_and_chunk_documents()
-
-    # Handle loading/chunking failures
-    if not chunked_docs and not original_docs:
-        print("Error: Failed to load any documents or chunks.")
-        return
-    elif not chunked_docs and original_docs:
-        print("Warning: Documents loaded but chunking failed. Trying to proceed with existing vector store only.")
-    elif not original_docs and chunked_docs:
-        print("Error: Cannot proceed with full-document context without original documents.")
-        return
-
-    # Create lookup map: Store tuple (content, url) keyed by (title, date)
-    original_doc_lookup = {}
-    for doc in original_docs:
-        title = doc.metadata.get('title', 'N/A')
-        date_meta = doc.metadata.get('date', 'N/A')
-        url = doc.metadata.get('url', '#') # Default URL if missing
-        lookup_key = (title, date_meta)
-        original_doc_lookup[lookup_key] = (doc.page_content, url)
-
-    if not original_doc_lookup:
-        print("Warning: Could not create lookup for original documents.")
-
-    # 3. Create or Load Vector Store (using CHUNKS)
-    vector_store = create_or_load_vector_store(chunked_docs, embeddings)
-    if not vector_store:
-        print("Failed to create or load the vector store. Cannot proceed.")
+    # 2. Load the pre-built Vector Store
+    print(f"Loading pre-built vector store from: {VECTOR_STORE_PATH}")
+    try:
+        # We need to specify the collection name used during the build
+        collection_name = "blog_posts_collection"
+        vector_store = Chroma(
+            persist_directory=VECTOR_STORE_PATH,
+            embedding_function=embeddings,
+            collection_name=collection_name
+        )
+        print(f"Vector store loaded. Contains {vector_store._collection.count()} documents.")
+    except Exception as e:
+        print(f"Error loading vector store: {e}")
+        print("Ensure the store was built correctly and the collection name matches.")
         return
 
-    # 4. Get Retriever (operates on CHUNKS)
+    # 3. Load the pre-built Original Document Lookup Dictionary
+    print(f"Loading original document lookup from: {LOOKUP_FILE_PATH}")
+    original_doc_lookup = load_pickle(LOOKUP_FILE_PATH)
+    if original_doc_lookup is None:
+        print("Failed to load original document lookup. Aborting.")
+        return
+    if not isinstance(original_doc_lookup, dict) or not original_doc_lookup:
+         print("Warning: Loaded original document lookup is empty or not a dictionary.")
+         # Depending on requirements, maybe allow continuing or abort.
+
+    # 4. Get Retriever
     retriever = get_retriever(vector_store, RETRIEVER_TOP_K)
     if not retriever:
         print("Failed to create retriever. Cannot proceed.")
@@ -71,28 +82,25 @@ def run_analysis_pipeline(query: str):
         print(f"Failed to create RAG chain: {e}")
         return
 
-    # 7. Invoke Chain with User Query and Lookup
+    # 7. Invoke Chain with User Query and Loaded Lookup
     print(f"\nInvoking RAG chain with query: '{query}'")
     analysis_result = None
     analyzed_docs_metadata = []
     try:
         invoke_input = {"question": query, "original_doc_lookup": original_doc_lookup}
-        # Expect the chain to output a dict: {"analysis": ..., "analyzed_metadata": [...]}
         chain_output = rag_chain.invoke(invoke_input)
 
-        # -- Check the output structure --
         if isinstance(chain_output, dict):
-            analysis_result = chain_output.get('analysis', 'Error: Analysis not found in chain output.')
+            analysis_result = chain_output.get('analysis', 'Error: Analysis not found')
             analyzed_docs_metadata = chain_output.get('analyzed_metadata', [])
             print("\n--- Analysis Result --- (from dict)")
             print(analysis_result)
             print("-----------------------")
             print(f"--- Retrieved Metadata for {len(analyzed_docs_metadata)} Documents ---")
         else:
-             # Fallback if chain output is unexpectedly just the analysis string
-             print("Warning: Chain output was not a dictionary. Expected {'analysis': ..., 'analyzed_metadata': ...}.")
-             analysis_result = str(chain_output) # Treat output as analysis string
-             analyzed_docs_metadata = [] # Cannot extract metadata
+             print("Warning: Chain output was not a dictionary.")
+             analysis_result = str(chain_output)
+             analyzed_docs_metadata = []
              print("\n--- Analysis Result --- (fallback)")
              print(analysis_result)
              print("-----------------------\n")
@@ -112,7 +120,7 @@ def run_analysis_pipeline(query: str):
         query=query,
         generation_date=generation_date,
         analysis_result=analysis_result,
-        analyzed_docs=analyzed_docs_metadata, # Pass the list of dicts
+        analyzed_docs=analyzed_docs_metadata,
         filename=PDF_OUTPUT_FILENAME
     )
 
