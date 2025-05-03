@@ -10,7 +10,19 @@ Retrieval-Augmented Generation (RAG) system for analyzing maritime documents usi
     cd maritime-agent
     ```
 2.  **Install Dependencies:** Requires Python 3.x.
+    
+    It is recommended to use a virtual environment to isolate project dependencies:
     ```bash
+    # Create a virtual environment directory named 'venv'
+    python -m venv venv 
+    
+    # Activate the environment
+    # Linux/macOS:
+    source venv/bin/activate 
+    # Windows (Command Prompt/PowerShell):
+    # venv\Scripts\activate
+    
+    # Install dependencies into the active environment
     pip install -r requirements.txt
     ```
     *(Optional)* For GPU-accelerated embeddings, install PyTorch with CUDA support corresponding to your hardware via the [PyTorch website](https://pytorch.org/get-started/locally/). The system automatically detects and utilizes CUDA if available.
