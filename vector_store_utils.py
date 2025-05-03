@@ -1,5 +1,6 @@
 # vector_store_utils.py
 import os
+import torch # Import torch to check for CUDA
 from langchain_community.vectorstores import Chroma
 from langchain_community.embeddings import HuggingFaceEmbeddings
 from config import EMBEDDING_MODEL_NAME, VECTOR_STORE_PATH
@@ -7,10 +8,15 @@ from config import EMBEDDING_MODEL_NAME, VECTOR_STORE_PATH
 def get_embedding_function():
     """Initializes and returns the embedding function."""
     print(f"Initializing embedding model: {EMBEDDING_MODEL_NAME}")
+
+    # Determine device based on CUDA availability
+    device = 'cuda' if torch.cuda.is_available() else 'cpu'
+    print(f"Using device: {device} for embeddings")
+
     # Use Langchain's wrapper for sentence-transformers
     embeddings = HuggingFaceEmbeddings(
         model_name=EMBEDDING_MODEL_NAME,
-        model_kwargs={'device': 'cpu'} # Or 'cuda' if available/configured
+        model_kwargs={'device': device} # Dynamically set device
         )
     print("Embedding model initialized.")
     return embeddings
