@@ -130,7 +130,7 @@ if __name__ == "__main__":
     if len(sys.argv) > 1:
         user_query = " ".join(sys.argv[1:])
     else:
-        user_query = "Summarize the main challenges discussed regarding AI implementation in healthcare."
+        user_query = "Analyze this article in detail focusing on following themes: Nordics, maritime industry, innovation, sustainability, and future trends."
         print(f"No query provided, using default: '{user_query}'")
 
     from config import GEMINI_API_KEY
