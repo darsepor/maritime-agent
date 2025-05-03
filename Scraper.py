@@ -1,7 +1,7 @@
 
 
 #from __future__ import annotations
-import asyncio, json, csv
+import asyncio, csv
 from pathlib import Path
 from dataclasses import dataclass, asdict
 import httpx
@@ -156,22 +156,19 @@ async def main(target_articles=TARGET_ARTICLES):
 
         await asyncio.gather(*(bound(u) for u in urls))
 
-    file_name = f"news{len(articles)}"
+    #Save file as csv
+    file_name = f"blog_posts_{len(articles)}"
+    columns = [("title", "title"), ("body_text","text"), ("keywords", "keywords"), ("segment", "segment") ,("date", "date"),("url", "url")]
 
-    # ---------- save ----------
-    Path("{file_name}.json").write_text(
-        json.dumps([asdict(a) for a in articles], ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
-    
     with Path(f"{file_name}.csv").open("w", newline="", encoding="utf-8") as fh:
         w = csv.writer(fh)
-        w.writerow(Article.__dataclass_fields__.keys())          # header
+        # Write custom headers
+        w.writerow([col[1] for col in columns])  # second item is display name
         for a in articles:
             row = asdict(a)
-            row["keywords"] = "|".join(row["keywords"])          # flat str
-            w.writerow(row.values())
-    print(f"[✓] saved {len(articles)} articles → {file_name}.csv / {file_name}.json")
+            row["keywords"] = "|".join(row["keywords"])  # flatten list
+            # Write values in your chosen order
+            w.writerow([row[col[0]] for col in columns])
 
 if __name__ == "__main__":
     asyncio.run(main())
