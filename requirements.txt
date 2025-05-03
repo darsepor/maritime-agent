@@ -6,3 +6,6 @@ sentence-transformers
 chromadb
 reportlab
 python-dotenv 
+httpx
+beautifulsoup4
+playwright
