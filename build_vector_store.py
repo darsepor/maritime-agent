@@ -68,6 +68,25 @@ def main():
         metadatas.append(chunk.metadata)
         embeddings_list.append(all_embeddings[i]) # Use pre-generated embedding
 
+    # --- Filter out duplicate IDs before upserting ---
+    print(f"Generated {len(ids)} total IDs. Filtering duplicates...")
+    unique_data = {}
+    filtered_ids = []
+    filtered_embeddings = []
+    filtered_metadatas = []
+    filtered_documents = []
+
+    for i, doc_id in enumerate(ids):
+        if doc_id not in unique_data:
+            unique_data[doc_id] = True # Mark ID as seen
+            filtered_ids.append(doc_id)
+            filtered_embeddings.append(embeddings_list[i])
+            filtered_metadatas.append(metadatas[i])
+            filtered_documents.append(documents_content[i])
+
+    print(f"Filtered down to {len(filtered_ids)} unique IDs for upsert.")
+    # --- End filtering ---
+
     # 5. Connect to ChromaDB and Upsert Data
     print(f"Connecting to persistent vector store at: {VECTOR_STORE_PATH}")
     try:
@@ -79,13 +98,13 @@ def main():
         collection_name = "blog_posts_collection"
         collection = chroma_client.get_or_create_collection(name=collection_name)
 
-        print(f"Upserting {len(ids)} documents into collection '{collection_name}'...")
+        print(f"Upserting {len(filtered_ids)} documents into collection '{collection_name}'...") # Use filtered count
         # Use upsert to add or update based on deterministic IDs
         collection.upsert(
-            ids=ids,
-            embeddings=embeddings_list,
-            metadatas=metadatas,
-            documents=documents_content
+            ids=filtered_ids, # Use filtered list
+            embeddings=filtered_embeddings, # Use filtered list
+            metadatas=filtered_metadatas, # Use filtered list
+            documents=filtered_documents # Use filtered list
         )
         print("Upsert operation completed.")
         print(f"Vector store now contains {collection.count()} documents.")

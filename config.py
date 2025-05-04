@@ -4,7 +4,7 @@ from dotenv import load_dotenv
 
 load_dotenv() # Load variables from .env file
 
-CSV_FILE_PATH = 'blog_posts.csv'
+CSV_FILE_PATH = 'blog_posts_1019.csv'
 CSV_CONTENT_COLUMN = 'text' # Column with the main text to embed
 CSV_METADATA_COLUMNS = ['title', 'date'] # Columns to store as metadata
 
