@@ -9,3 +9,11 @@ python-dotenv
 httpx
 beautifulsoup4
 playwright
+
+numpy
+aiohttp
+httpx
+selectolax
+selenium
+pymongo
+python-dateutil
