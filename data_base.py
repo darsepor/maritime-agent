@@ -62,9 +62,11 @@ class MongoHandler:
         )
         return result.modified_count
     
-    def insert_many_safe(self, domain, docs):
-        domain = self.check_domain_by_fields(domain, docs)
+    def insert_many_safe(self, domain_input, docs):
+        
+        domain = self.check_domain_by_fields(domain_input, docs)
         collection = self.collections.get(domain)
+        
         if collection is None or not docs:
             print("No collection or documents provided")
             return 0
@@ -148,16 +150,15 @@ class MongoHandler:
 
             if expected_fields is None:
                 print(f"⚠️ Unknown domain '{domain}'. Known domains: {', '.join(domain_field_map.keys())}")
-            elif not expected_fields.issubset(doc_fields):
+            elif expected_fields != doc_fields:
                 print(f"⚠️ Field mismatch for domain '{domain}':")
                 print(f"    Expected fields: {expected_fields}")
                 print(f"    Found fields:    {doc_fields}")
             else:
-                domain_works = True
                 return domain  # All good
 
             # Prompt user
-            new_domain = input("Enter a valid domain to use, or press Enter to continue anyway: ").strip()
+            new_domain = input("Enter a valid domain to use:").strip()
             domain = new_domain
         return new_domain if new_domain else domain
     
@@ -175,5 +176,4 @@ class MongoHandler:
         updated_count = self.mark_scraped(urls_collection, ids)
         print(f"✅ Marked {updated_count} entries in '{urls_collection}' as scraped.")
         return updated_count
-
 
