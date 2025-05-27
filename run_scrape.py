@@ -100,9 +100,9 @@ def run_scrape(domain,start_time, end_time, limit, uri):
 
 #Define variables to run
 domain = "news"
-start_time = datetime(2022, 1, 1)
-end_time = datetime(2025, 5, 23)
-limit = 10000
+start_time = datetime(2000, 1, 1)
+end_time = datetime(2020, 5, 23)
+limit = 8000
 
 
 
