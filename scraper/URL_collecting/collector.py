@@ -11,6 +11,7 @@ from selenium.webdriver.chrome.options import Options  #again for google for ren
 import asyncio # for asynchronous execution to speed up scraping calls
 import sys
 import os 
+import sources
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__),'../')))
 from scrape_site.scrapesite import AsyncHTMLScraper
 
@@ -25,7 +26,7 @@ class URL_collector:
         self.patent_data = pd.DataFrame(columns=["patent_code", "priority_date", "url", "domain", "scraped"])
         self.news_data = pd.DataFrame(columns=["headline", "date", "url", "domain", "scraped"])
         self.science_data = pd.DataFrame(columns=["title", "date", "url"])
-
+        
         # DataFrames to store retrieval stats
         date_range = pd.date_range(start=self.start_date, end=self.end_date)
         self.patent_retrieval = pd.DataFrame({
@@ -53,17 +54,47 @@ class URL_collector:
         ]
         print(f"passing montly roots {monthly_roots}")
         # Scrape and flatten
-        scraper = AsyncHTMLScraper(monthly_roots, field_rules)
+        scraper = AsyncHTMLScraper(monthly_roots, field_rules, apply_domain_rules=False)
         raw_results = asyncio.run(scraper.scrape_paginated_archives(monthly_roots))
         self.news_data = pd.concat([
             self.news_data,
             self._flatten_news_results(raw_results, "marinelink.com")
         ], ignore_index=True)
 
-    def get_urls_from_any_website_defaul(self,urls):
-        field_rules = 0
-        scraper = AsyncHTMLScraper(urls, field_rules)
-        result = asyncio.run(scraper.scrape())
+
+    
+
+    def get_recent_urls(self):
+        domains = sources.domains
+        print(domains)
+        for dom in domains:
+            rules = sources.DOMAIN_RULES_URL[dom]
+            categories = rules["categories"]
+            urls = []
+            if categories:
+                for cat in categories:
+                    urls.append(f"{rules['url_base']}/{cat}")
+            else: urls.append(rules['url_base'])
+            print(urls)
+            print(rules["field_rules"])
+            
+            scraper = AsyncHTMLScraper(urls, rules["field_rules"], apply_domain_rules=False, get_urls=True)
+            scraper.semaphore = asyncio.Semaphore(1)
+            raw_results = asyncio.run(scraper.scrape())
+            print(raw_results)
+            
+            print("GOT raw result", len(raw_results))
+            print("Example raw result:", raw_results[0])
+            print("Type of first item:", type(raw_results[0]))
+
+
+            self.news_data = pd.concat([
+                self.news_data,
+                self._flatten_news_results(raw_results, dom)
+            ], ignore_index=True)
+ 
+
+    
         
 
     def get_google_patents(self, search_term="maritime"):
@@ -161,8 +192,13 @@ class URL_collector:
                 else:
                     print(f"[✓] Page {page} scraped: {page_url}")
                     print(len(page_results))
-                
-                    
+
+                #Ensure we have some date-value
+                midpoint_date = (current_date + (next_date - current_date) / 2).strftime('%Y-%m-%d')
+                for result in page_results:
+                    if result.get("priority_date") is None:
+                        result["priority_date"] = midpoint_date
+                                    
 
                 collected.extend(page_results)
                 time.sleep(random.uniform(0.2, 0.6))
@@ -210,22 +246,20 @@ class URL_collector:
 
 if __name__ == "__main__":
 
-
-
-
+    pass
+    #collector = URL_collector("2005-01-01", "2015-01-01", urls_per_day=5)
+    #collector.get_recent_urls()
 
 
     # Define your collections
-    start_date = "1825-01-01"
-    end_date = "2025-5-22"
-    collector = URL_collector(start_date, end_date, urls_per_day=1)
-    collector.get_google_patents('''(kongsberg OR autonomous OR sonar OR maritime OR navigation OR missile OR "remote sensing" OR "propulsion system" OR "underwater vehicle" OR "fire control system" OR radar OR "combat system")''')
-    path = f"patents_{start_date}_{end_date}.csv"
-    collector.patent_data["url"] = collector.patent_data["url"].str.replace(r"/[^/]+$", "/en", regex=True)
-    collector.patent_data.to_csv(path, index=False)
+    #start_date = "2005-01-01"
+    #end_date = "2015-01-01"
+    #collector = URL_collector(start_date, end_date, urls_per_day=5)
+    #collector.get_urls_from_marine_link()
+    #path = f"news_{start_date}_{end_date}.csv"
+    #
+    #collector.news_data.to_csv(path, index=False)
 
-
-    # Clean and prepare records
 
 
     
