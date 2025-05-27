@@ -16,7 +16,7 @@ import fieldrules
 
 
 class AsyncHTMLScraper:
-    def __init__(self, urls, field_rules = fieldrules.field_rules_article_basic):
+    def __init__(self, urls, field_rules = fieldrules.field_rules_article_basic, start_date = None, end_date = None, apply_domain_rules = True, get_urls = False):
         """
         :param urls: List of URLs to fetch.
         :param field_rules: Dict of field_name: CSS selector or callable.
@@ -30,8 +30,21 @@ class AsyncHTMLScraper:
         self.global_pause = asyncio.Event()
         self.global_pause.set()
         self.pause_lock = asyncio.Lock()
+        self.start_date = start_date
+        self.end_date = end_date
+        self.apply_domain_rules = apply_domain_rules
+        self.get_urls = get_urls
 
-    async def fetch(self, session, url, retries=5):
+    async def fetch_with_fallback(self, session, url):
+        domain = urlparse(url).netloc
+        url, html = await self.fetch(session, url, raise_on_header_error=True)
+        if html is None:
+            print(f"🔁 Falling back to Playwright for {url}")
+            return await self.fetch_with_playwright(url)
+        return url, html
+
+
+    async def fetch(self, session, url, retries=5, raise_on_header_error=False):   #Given url and rules from self.field_rules extract fields, Handels pausing threads dynamicly to avoid getting blocked/banned
         print(f"🔎 Fetching {url}")
 
 
@@ -67,17 +80,23 @@ class AsyncHTMLScraper:
                         "Accept-Language": random.choice(ACCEPT_LANGUAGES),
                         "Referer": "https://www.google.com/",
                     }
+                    print("Trying to het a response")
                     async with session.get(url, headers=headers, timeout=10) as response:
+                        print("Got response")
                         if response.status == 200:
                             html = await response.text()
                             print(f"✅ Got HTML for {url}, length = {len(html)}")
                             await asyncio.sleep(random.uniform(0.2, 0.3))
-                            with open(f"html_dump.html", "w", encoding="utf-8") as f:
-                                f.write(html)
+
                             return url, html
                         else:
+                            print(f"❌ Got {response.status} for {url}")
                             await asyncio.sleep(1 * (1.2 ** attempt) + random.uniform(0, 0.3))
                 except Exception as e:
+                    print(f"⚠️ Exception on attempt {attempt} for {url}: {e}")
+                    if "Header value is too long" in str(e):
+                        if raise_on_header_error:
+                            return url, None  # Let wrapper decide to fallback
                     if attempt == retries:
                         print(f"❌ Final fail for {url}")
             print(f"❌ Giving up on {url}")
@@ -97,7 +116,7 @@ class AsyncHTMLScraper:
         accept_language = random.choice(ACCEPT_LANGUAGES)
 
         async with self.semaphore:
-            for attempt in range(int(retries) + 1):
+            for attempt in range(retries + 1):
                 try:
                     await asyncio.sleep(random.uniform(0.5, 1.5))
                     async with async_playwright() as p:
@@ -106,17 +125,17 @@ class AsyncHTMLScraper:
                             user_agent=user_agent,
                             locale=accept_language,
                             java_script_enabled=True,
-                            extra_http_headers={
-                                "Referer": "https://www.google.com/",
-                            }
+                            extra_http_headers={"Referer": "https://www.google.com/"},
                         )
                         page = await context.new_page()
+
+                        if self.pause_lock.locked():
+                            await self.global_pause.wait()
+
                         await page.goto(url, timeout=15000)
-                        await self.wait_for_non_empty_content(page, 'meta[itemprop="datePublished"]', attribute="content")
-                        await self.wait_for_non_empty_content(page, '[itemprop="text"]')  # innerText based
- 
-                        await asyncio.sleep(1)
-                        
+                        await page.wait_for_selector("body", timeout=8000)
+                        await asyncio.sleep(1.0 + random.uniform(0.2, 0.5))
+
                         html = await page.content()
                         await browser.close()
 
@@ -133,27 +152,46 @@ class AsyncHTMLScraper:
     def extract_fields(self, html):
         tree = HTMLParser(html)
         extracted = {}
+
+
         for key, rule in self.field_rules.items():
             try:
                 if callable(rule):
                     extracted[key] = rule(tree)
+
                 else:
                     node = tree.css_first(rule)
                     extracted[key] = node.text() if node else ""
             except Exception:
                 extracted[key] = None
         extracted["scrape_time"] = datetime.now()
+
         return extracted
 
-    async def scrape(self):
+    async def scrape(self):  #General function to scrape, lists urls as task (to utilise concurrency and parallelism) and passes them to fetch
+        
         print(f"Scraping")
         async with aiohttp.ClientSession() as session:
-            tasks = [self.fetch(session, url) for url in self.urls]
+            tasks = [self.fetch_with_fallback(session, url) for url in self.urls]
             print(tasks)
-            
+            last_pause_time = asyncio.get_event_loop().time()
+            global_pause = random.uniform(700, 1100)
             for i, future in enumerate(asyncio.as_completed(tasks), 1):
+                current_time = asyncio.get_event_loop().time()
+                
+                if current_time - last_pause_time >= global_pause:  # Default pause to cool down
+                    print(f"🌐🌐🌐Large global pause, 30-60s.🌐🌐🌐, total fetched {self.parsed_count}")
+                    
+                    global_pause = random.uniform(700, 1100)
+                    self.global_pause.clear()
+                    await asyncio.sleep(random.uniform(30, 60))
+                    self.global_pause.set()
+                    last_pause_time = current_time
                 url, html = await future
                 if html:
+                    with open(f"html_dump.html", "w", encoding="utf-8") as f:
+                        f.write(html)
+
                     self._apply_domain_rules(url)
                     fields = self.extract_fields(html)
                     self.results.append({"url": url, **fields})
@@ -161,6 +199,8 @@ class AsyncHTMLScraper:
                 if self.parsed_count % 100 == 0 or self.parsed_count == len(self.urls):
                     
                     print(f"Parsed {self.parsed_count}/{len(self.urls)} pages")
+        if self.get_urls:
+            return self.results
         return pd.DataFrame(self.results)
     
 
@@ -248,28 +288,35 @@ class AsyncHTMLScraper:
         return False  # All dates are older or unparseable
     
 
-    async def wait_for_non_empty_content(page, selector, attribute=None, timeout=8000):
-        async def is_filled():
-            try:
-                element = await page.query_selector(selector)
-                if not element:
-                    return False
-                if attribute:
-                    attr_val = await element.get_attribute(attribute)
-                    return attr_val and attr_val.strip() != ""
-                else:
-                    text = await element.inner_text()
-                    return text.strip() != ""
-            except Exception:
-                return False
-        await page.wait_for_function(
-            is_filled, timeout=timeout
-        )
+    async def wait_for_non_empty_content(
+            self, page, selector, *, attribute=None, timeout=8000
+        ):
+            js_expr = """({ sel, attr }) => {
+                const el = document.querySelector(sel);
+                if (!el) return false;
 
+                if (attr) {
+                    const v = el.getAttribute(attr);
+                    return v && v.trim() !== "";
+                }
+                return el.innerText && el.innerText.trim() !== "";
+            }"""
+
+            args = {"sel": selector, "attr": attribute}
+
+            print(f"🕒 Waiting for selector='{selector}' attribute='{attribute}' with timeout={timeout}")
+            print(f"👉 JS ARGUMENTS PASSED TO BROWSER: {args}")
+
+            try:
+                await page.wait_for_function(js_expr, arg=args, timeout=timeout)
+            except Exception as e:
+                print(f"❌ wait_for_non_empty_content failed for selector='{selector}' with error: {e}")
+                raise
 
 
     def _apply_domain_rules(self, url):
-
+        if self.apply_domain_rules is False:
+            return
         parsed = urlparse(url)
         domain = parsed.hostname
         
