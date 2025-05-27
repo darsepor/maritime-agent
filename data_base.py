@@ -177,3 +177,15 @@ class MongoHandler:
         print(f"✅ Marked {updated_count} entries in '{urls_collection}' as scraped.")
         return updated_count
 
+
+if __name__ == "__main__":
+    data = pd.read_csv("news_2005-01-01_2015-01-01.csv")
+    
+    print(len(data))
+    db = MongoHandler("mongodb+srv://maritime:Marko1324Polo@m0.cslrq4t.mongodb.net/?retryWrites=true&w=majority&appName=M0")
+    data =db.filter_out_scraped_df("news_urls", data, "url")
+    print(len(data))
+    docs = db.prepare_documents_from_df(data, ["url", "headline", "date", "domain", "scraped"], "url", "news")
+    db.insert_many_safe("news", docs)
+    
+    
