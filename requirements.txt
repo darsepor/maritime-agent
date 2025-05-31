@@ -3,7 +3,7 @@ langchain-community
 langchain-google-genai
 pandas
 sentence-transformers
-chromadb
+# chromadb
 reportlab
 python-dotenv 
 httpx
@@ -18,3 +18,5 @@ selenium
 pymongo
 python-dateutil
 pyarrow
+langchain-huggingface
+lark

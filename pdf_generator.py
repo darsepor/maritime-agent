@@ -7,9 +7,10 @@ from reportlab.platypus import Paragraph, Spacer, HRFlowable, BaseDocTemplate, F
 from reportlab.lib import colors
 import textwrap # Keep for basic wrapping if needed elsewhere
 from reportlab.lib.enums import TA_LEFT
+from typing import Optional
 import re
 
-def create_pdf(query: str, generation_date: str, analysis_result: str, analyzed_docs: list[dict], filename: str):
+def create_pdf(query: str, generation_date: str, analysis_result: str, analyzed_docs: list[dict], filename: str, reasoning_trail: Optional[str] = None, current_date_for_analysis: Optional[str] = None):
     """Creates a PDF report including query, date, analysis, and references page."""
     print(f"Creating PDF: {filename}...")
     try:
@@ -112,11 +113,20 @@ def create_pdf(query: str, generation_date: str, analysis_result: str, analyzed_
         # --- PDF Content ---
         add_heading("Blog Post Analysis Report", title_style)
         add_paragraph(f"Report Generated: {generation_date}", normal_style)
-        add_paragraph(f"<b>Analysis Query:</b> {query}", normal_style, space_after=0.2) # Add more space after query
+        add_paragraph(f"<b>Analysis Query:</b> {query}", normal_style, space_after=0.2)
+
+        # If the chain passed down today's date separately, include it
+        if current_date_for_analysis:
+            add_paragraph(f"<b>Analysis Context Date:</b> {current_date_for_analysis}", normal_style, space_after=0.2)
 
         add_heading("Generated Analysis", heading_style)
         # Process the analysis result using the paragraph handler which attempts Markdown
         add_paragraph(analysis_result, normal_style)
+
+        # Optionally include the reasoning trail / chain-of-thought
+        if reasoning_trail:
+            add_heading("LLM Reasoning Trail", heading_style)
+            add_paragraph(reasoning_trail, normal_style)
 
         # --- References Section (at the end) ---
         add_heading("References", heading_style)

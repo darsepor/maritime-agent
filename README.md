@@ -40,7 +40,7 @@ Retrieval-Augmented Generation (RAG) system for analyzing maritime documents usi
     ```bash
     python build_vector_store.py
     ```
-    This command populates the `./chroma_db_store` vector database and creates `original_doc_lookup.pkl`.
+    This command populates the `./faiss_store` vector database with FAISS and creates `original_doc_lookup.pkl`.
 
 2.  **Run Analysis:** Execute analysis with a query.
     ```bash

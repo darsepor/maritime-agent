@@ -1,10 +1,10 @@
 # data_loader.py
-import pandas as pd # <-- Add import
 from langchain_core.documents import Document
 from langchain.text_splitter import RecursiveCharacterTextSplitter
-from config import CSV_FILE_PATH, CSV_CONTENT_COLUMN
+from config import MONGO_URI, MONGO_DATABASE_NAME, NEWS_COLLECTION_NAME, PATENTS_COLLECTION_NAME
+from data_base import MongoHandler # Assuming MongoHandler is in data_base.py
 
-# Define splitter configuration (can be moved to config.py if preferred)
+# Define splitter configuration
 CHUNK_SIZE = 1000
 CHUNK_OVERLAP = 200
 
@@ -17,84 +17,132 @@ def split_documents(documents):
         chunk_size=CHUNK_SIZE,
         chunk_overlap=CHUNK_OVERLAP,
         length_function=len,
-        add_start_index=True, # Optional: adds index of chunk's start in original doc
+        add_start_index=True,
     )
     split_docs = text_splitter.split_documents(documents)
     print(f"Split into {len(split_docs)} chunks.")
     return split_docs
 
-def load_and_chunk_documents():
-    """Loads documents from CSV using Pandas, creates Document objects, splits, returns originals and chunks."""
-    print(f"Loading raw data from: {CSV_FILE_PATH} using Pandas")
+def _create_document_from_mongo_record(record, text_field_name='text'):
+    """Helper to create a Langchain Document from a MongoDB record."""
+    content = record.get(text_field_name, '')
+    if not content or not isinstance(content, str):
+        print(f"Warning: Record with _id {record.get('_id')} has missing or invalid content in '{text_field_name}'. Skipping.")
+        return None
 
+    metadata = {key: value for key, value in record.items() if key not in [text_field_name, '_id']}
+    metadata['mongo_id'] = str(record['_id']) # Ensure mongo_id is stored and is a string
+
+    # Convert any non-serializable metadata to string (e.g., datetime objects)
+    for k, v in metadata.items():
+        if not isinstance(v, (str, int, float, bool, list, dict, type(None))):
+            metadata[k] = str(v)
+            
+    return Document(page_content=content, metadata=metadata)
+
+def load_news_from_mongo(mongo_handler, limit=0, skip=0, since_timestamp=None):
+    """Loads news documents from MongoDB, optionally filtered by since_timestamp."""
+    print(f"Loading news from MongoDB (collection: {NEWS_COLLECTION_NAME}, limit: {limit}, skip: {skip})...")
+    news_records = mongo_handler.get_news_for_vectorization(limit=limit, skip=skip, since_timestamp=since_timestamp)
+    documents = []
+    for record in news_records:
+        doc = _create_document_from_mongo_record(record, text_field_name='text')
+        if doc:
+            doc.metadata['doc_type'] = 'news'
+            documents.append(doc)
+    print(f"Loaded {len(documents)} news documents from MongoDB.")
+    return documents
+
+def load_patents_from_mongo(mongo_handler, limit=0, skip=0, since_timestamp=None):
+    """Loads patent documents from MongoDB, optionally filtered by since_timestamp."""
+    print(f"Loading patents from MongoDB (collection: {PATENTS_COLLECTION_NAME}, limit: {limit}, skip: {skip})...")
+    patent_records = mongo_handler.get_patents_for_vectorization(limit=limit, skip=skip, since_timestamp=since_timestamp)
+    documents = []
+    for record in patent_records:
+        doc = _create_document_from_mongo_record(record, text_field_name='text')
+        if doc:
+            doc.metadata['doc_type'] = 'patent'
+            documents.append(doc)
+    print(f"Loaded {len(documents)} patent documents from MongoDB.")
+    return documents
+
+def load_and_chunk_documents(data_types="all", limit_per_type=0, skip_offsets=None, last_build_timestamp=None):
+    """
+    Loads documents from MongoDB, creates Document objects, splits, returns originals and chunks.
+    Args:
+        data_types (str or list): "news", "patents", "all", or a list like ["news", "patents"].
+        limit_per_type (int): Max number of documents to load per type for this batch. 0 for no limit in this call.
+        skip_offsets (dict, optional): A dictionary like {'news': 0, 'patents': 0} for skipping documents.
+        last_build_timestamp (datetime or str, optional): If provided, load docs newer than this.
+    """
+    mongo_handler = MongoHandler(MONGO_URI, MONGO_DATABASE_NAME)
     original_documents_cleaned = []
-    chunked_documents = []
-
-    try:
-        # Use pandas to read the CSV - it often handles quoting issues better
-        df = pd.read_csv(
-            CSV_FILE_PATH,
-            encoding='utf-8',
-            on_bad_lines='warn', # Or 'skip' to ignore problematic rows, 'error' to fail
-            encoding_errors='ignore', # Add this line to handle UTF-8 decoding errors
-            # You might explore other pandas options like 'escapechar' if needed
-        )
-        print(f"Loaded {len(df)} rows using Pandas.")
-
-        if df.empty:
-            print("Warning: No documents loaded from CSV. Check CSV format and content.")
-            return [], []
-
-        # --- Create clean Document objects from DataFrame rows ---
-        expected_columns = df.columns.tolist() # Get columns directly from the loaded data
-
-        for i, row in df.iterrows():
-            # Explicitly get the page content from the designated column
-            content = row.get(CSV_CONTENT_COLUMN, '')
-
-            # Create metadata dict from all *other* columns
-            metadata = {}
-            for col in expected_columns:
-                if col != CSV_CONTENT_COLUMN:
-                    # Convert potential non-string types (like NaN) to string or 'N/A'
-                    metadata[col] = str(row.get(col, 'N/A')) if pd.notna(row.get(col)) else 'N/A'
-
-            # Add original row number as metadata
-            metadata['original_row'] = i
-
-            # Check if content is valid
-            if not content or not isinstance(content, str):
-                 print(f"Warning: Row {i} has missing or invalid content in '{CSV_CONTENT_COLUMN}'. Skipping.")
-                 continue
-
-            # Create the cleaned document
-            clean_doc = Document(page_content=content, metadata=metadata)
-            original_documents_cleaned.append(clean_doc)
-        # --- End document creation ---
-
-        print(f"Processed {len(original_documents_cleaned)} valid documents.")
-        if not original_documents_cleaned:
-             return [], [] # Return empty lists if no valid docs processed
-
-        # Split the cleaned documents
-        chunked_documents = split_documents(original_documents_cleaned)
-        return original_documents_cleaned, chunked_documents
-
-    except FileNotFoundError:
-        print(f"Error: CSV file not found at {CSV_FILE_PATH}")
+    skip_offsets = skip_offsets or {}
+    
+    if isinstance(data_types, str):
+        if data_types.lower() == "all":
+            data_types_to_load = ["news", "patents"]
+        else:
+            data_types_to_load = [data_types.lower()]
+    elif isinstance(data_types, list):
+        data_types_to_load = [dt.lower() for dt in data_types]
+    else:
+        print("Error: Invalid data_types argument. Must be 'news', 'patents', 'all', or a list.")
         return [], []
-    except Exception as e:
-        # Catch Pandas-specific errors or general exceptions
-        print(f"Error loading or processing CSV with Pandas: {type(e).__name__}: {e}")
-        import traceback
-        traceback.print_exc()
-        return [], [] # Return empty lists on failure
 
-# Optional: Add text splitting logic here if posts are very long - REMOVED, now integrated above
-# from langchain.text_splitter import RecursiveCharacterTextSplitter
-# def split_documents(documents, chunk_size=1000, chunk_overlap=200):
-#     print(f"Splitting {len(documents)} documents into chunks...")
-#     text_splitter = RecursiveCharacterTextSplitter(chunk_size=chunk_size, chunk_overlap=chunk_overlap)
-#     split_docs = text_splitter.split_documents(documents)
-#     print(f"Split into {len(split_docs)} chunks.")
-#     return split_docs 
+    if "news" in data_types_to_load:
+        current_skip_news = skip_offsets.get("news", 0)
+        original_documents_cleaned.extend(load_news_from_mongo(mongo_handler, limit=limit_per_type, skip=current_skip_news, since_timestamp=last_build_timestamp))
+    
+    if "patents" in data_types_to_load:
+        current_skip_patents = skip_offsets.get("patents", 0)
+        original_documents_cleaned.extend(load_patents_from_mongo(mongo_handler, limit=limit_per_type, skip=current_skip_patents, since_timestamp=last_build_timestamp))
+
+    if not original_documents_cleaned:
+        print("Warning: No new or matching documents loaded from MongoDB.")
+        return [], []
+
+    print(f"Processed {len(original_documents_cleaned)} new/updated documents from MongoDB for vectorization.")
+    chunked_documents = split_documents(original_documents_cleaned)
+    return original_documents_cleaned, chunked_documents
+
+# Example usage (optional, for testing)
+if __name__ == '__main__':
+    # To test, ensure your MongoDB is running and populated, and config.py is set up.
+    # You also need data_base.py with MongoHandler in the same directory or accessible.
+    
+    print("Testing data loader with MongoDB...")
+    
+    # Test loading news
+    # print("\\n--- Loading News ---")
+    # original_news, chunked_news = load_and_chunk_documents(data_types="news", limit_per_type=5)
+    # if original_news:
+    #     print(f"First original news doc: {original_news[0].page_content[:100]}...")
+    #     print(f"Metadata of first news doc: {original_news[0].metadata}")
+    # if chunked_news:
+    #     print(f"First chunked news doc: {chunked_news[0].page_content[:100]}...")
+    #     print(f"Metadata of first chunked news doc: {chunked_news[0].metadata}")
+
+    # Test loading patents
+    # print("\\n--- Loading Patents ---")
+    # original_patents, chunked_patents = load_and_chunk_documents(data_types="patents", limit_per_type=5)
+    # if original_patents:
+    #     print(f"First original patent doc: {original_patents[0].page_content[:200]}...") # Patents can be long
+    #     print(f"Metadata of first patent doc: {original_patents[0].metadata}")
+    # if chunked_patents:
+    #     print(f"First chunked patent doc: {chunked_patents[0].page_content[:100]}...")
+    #     print(f"Metadata of first chunked patent doc: {chunked_patents[0].metadata}")
+
+    # Test loading all
+    print("\\n--- Loading All ---")
+    original_all, chunked_all = load_and_chunk_documents(data_types="all", limit_per_type=2) # Small limit for combined test
+    if original_all:
+        print(f"Total original docs loaded: {len(original_all)}")
+        # for doc in original_all:
+        #     print(f"Type: {doc.metadata.get('url', 'N/A')[:30]}, Mongo ID: {doc.metadata.get('mongo_id')}") # Quick check of type/id
+    if chunked_all:
+        print(f"Total chunked docs: {len(chunked_all)}")
+        # for chunk in chunked_all:
+            # print(f"Chunk from Mongo ID: {chunk.metadata.get('mongo_id')}, Start Index: {chunk.metadata.get('start_index')}")
+
+    print("\\nData loading test complete.") 

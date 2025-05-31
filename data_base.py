@@ -7,6 +7,8 @@ from datetime import datetime
 import asyncio
 import processor
 import numpy as np
+from bson.objectid import ObjectId
+from dateutil import parser as date_parser
 
 
 class MongoHandler:
@@ -177,6 +179,141 @@ class MongoHandler:
         print(f"✅ Marked {updated_count} entries in '{urls_collection}' as scraped.")
         return updated_count
 
+    def count_news_for_vectorization(self, since_timestamp=None):
+        """Counts news documents, optionally filtered by since_timestamp based on 'scrape_time'."""
+        collection = self.collections.get("news")
+        if collection is None:
+            return 0
+        
+        query = {}
+        if since_timestamp:
+            try:
+                since_dt = date_parser.isoparse(since_timestamp) if isinstance(since_timestamp, str) else since_timestamp
+                query["scrape_time"] = {"$gt": since_dt}
+            except Exception as e:
+                print(f"Warning: Could not parse since_timestamp for counting news: {since_timestamp}. Error: {e}.")
+                # Decide if you want to count all or return 0/raise error
+        
+        return collection.count_documents(query)
+
+    def get_news_for_vectorization(self, limit=0, skip=0, since_timestamp=None):
+        """Fetches news documents for vectorization, returning _id and text.
+           Optionally fetches documents newer than since_timestamp based on 'scrape_time'."""
+        collection = self.collections.get("news")
+        if collection is None:
+            return []
+        
+        query = {}
+        if since_timestamp:
+            try:
+                # Ensure since_timestamp is a datetime object for comparison
+                # Assuming scrape_time in DB is also a datetime object or ISODate string
+                since_dt = date_parser.isoparse(since_timestamp) if isinstance(since_timestamp, str) else since_timestamp
+                query["scrape_time"] = {"$gt": since_dt}
+                print(f"Fetching news with scrape_time > {since_dt}")
+            except Exception as e:
+                print(f"Warning: Could not parse since_timestamp for news: {since_timestamp}. Error: {e}. Fetching all news.")
+
+        projection = {"_id": 1, "text": 1, "title":1, "date":1, "url":1, "scrape_time": 1, "keywords_maritime":1, "keywords_kongsberg":1}
+        
+        cursor = collection.find(query, projection)
+        if skip > 0:
+            cursor = cursor.skip(skip)
+        if limit > 0:
+            cursor = cursor.limit(limit)
+            
+        return list(cursor)
+
+    def get_patents_for_vectorization(self, limit=0, skip=0, since_timestamp=None):
+        """Fetches patent documents for vectorization, returning _id and concatenated text fields.
+           Optionally fetches documents newer than since_timestamp based on 'scrape_time'."""
+        collection = self.collections.get("patents")
+        if collection is None:
+            return []
+
+        query = {}
+        if since_timestamp:
+            try:
+                since_dt = date_parser.isoparse(since_timestamp) if isinstance(since_timestamp, str) else since_timestamp
+                query["scrape_time"] = {"$gt": since_dt}
+                print(f"Fetching patents with scrape_time > {since_dt}")
+            except Exception as e:
+                print(f"Warning: Could not parse since_timestamp for patents: {since_timestamp}. Error: {e}. Fetching all patents.")
+
+        projection = {"_id": 1, "abstract": 1, "claims": 1, "description": 1, "title":1, "date":1, "url":1, "patent_code":1, "scrape_time": 1, "keywords_maritime":1, "keywords_kongsberg":1}
+        
+        cursor = collection.find(query, projection)
+        if skip > 0:
+            cursor = cursor.skip(skip)
+        if limit > 0:
+            cursor = cursor.limit(limit)
+        
+        patents_data = []
+        for doc in cursor:
+            abstract_text = doc.get("abstract")
+            claims_text = doc.get("claims")
+            description_text = doc.get("description")
+            text_parts = [
+                str(abstract_text) if abstract_text is not None else "",
+                str(claims_text) if claims_text is not None else "",
+                str(description_text) if description_text is not None else ""
+            ]
+            concatenated_text = " \n\n ".join(part for part in text_parts if part)
+            
+            # Preserve all projected fields in the returned dict
+            patent_item = {k: doc.get(k) for k in projection.keys() if k != "abstract" and k != "claims" and k != "description"}
+            patent_item["text"] = concatenated_text
+            patents_data.append(patent_item)
+        return patents_data
+
+    def count_patents_for_vectorization(self, since_timestamp=None):
+        """Counts patent documents, optionally filtered by since_timestamp based on 'scrape_time'."""
+        collection = self.collections.get("patents")
+        if collection is None:
+            return 0
+
+        query = {}
+        if since_timestamp:
+            try:
+                since_dt = date_parser.isoparse(since_timestamp) if isinstance(since_timestamp, str) else since_timestamp
+                query["scrape_time"] = {"$gt": since_dt}
+            except Exception as e:
+                print(f"Warning: Could not parse since_timestamp for counting patents: {since_timestamp}. Error: {e}.")
+
+        return collection.count_documents(query)
+
+    def get_document_by_id(self, domain: str, doc_id: str):
+        """Fetches a single document by its MongoDB _id."""
+        collection = self.collections.get(domain)
+        if collection is None:
+            print(f"Warning: Collection for domain '{domain}' not found.")
+            return None
+        
+        # _id in this project is sometimes an ObjectId (Mongo-generated) and
+        # sometimes a URL / patent_code string that we set ourselves.  Try both
+        # lookup strategies instead of failing immediately.
+
+        query = {"_id": doc_id}
+        doc = collection.find_one(query)
+
+        # If that didn't work and the id *could* be an ObjectId, try again.
+        if doc is None:
+            try:
+                object_id = ObjectId(doc_id)
+                doc = collection.find_one({"_id": object_id})
+            except Exception:
+                # not a valid ObjectId string – ignore
+                pass
+
+        if doc and "text" not in doc:  # For patents, reconstruct text if not directly stored
+            if domain == "patents" and not doc.get("text"):
+                text_parts = [
+                    doc.get("abstract", ""), 
+                    doc.get("claims", ""), 
+                    doc.get("description", "")
+                ]
+                doc["text"] = " \n\n ".join(filter(None, text_parts))
+        return doc
 
 if __name__ == "__main__":
     data = pd.read_csv("news_2005-01-01_2015-01-01.csv")
