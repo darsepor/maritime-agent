@@ -24,6 +24,24 @@ field_rules_kawasaki = {
 }
 
 
+field_rules_maritime_executive = {
+    "articles": lambda tree: [
+        {
+            "headline": a.text(strip=True),
+            "url": a.attributes.get("href", "").strip(),
+            "date": (
+                a.parent.parent.parent.css_first(".datePublished")
+                .text(strip=True)
+                .removeprefix("Published")
+                .split("by")[0]
+                .strip()
+                if a.parent and a.parent.parent and a.parent.parent.parent else None
+            )
+        }
+        for a in tree.css("div.blog-item h1.title a, div.blog-item h2 a")
+    ]
+}
+
 field_rules_oedigital = {
     "articles": lambda tree: [
         {
@@ -62,7 +80,12 @@ oedigital_urls = {"url_base": "https://www.oedigital.com/",
                  "field_rules": field_rules_oedigital
                   }
 
-
+maritime_executive_urls = {"url_base": "https://maritime-executive.com/",
+                 "categories": ["government-news", "shipping-news","cruiseshipping-news", "shipbuilding-news","offshore-news"],  #also the base category
+                "page_logic": "start",  # the parameter key
+                "articles_per_page": 15,
+                 "field_rules": field_rules_maritime_executive
+                  }
 
 
    
@@ -70,8 +93,10 @@ DOMAIN_RULES_URL = {
     "www.wartsila.com": wartsila_urls,
     "global.kawasaki.com": kawasaki_urls,
     "www.oedigital.com":  oedigital_urls,
+    "www.maritime-executive.com": maritime_executive_urls
     
 }
 
 
-domains = ["www.wartsila.com", "global.kawasaki.com", "www.oedigital.com"]
+#domains = ["www.wartsila.com", "global.kawasaki.com", "www.oedigital.com"]
+domains = ["www.maritime-executive.com", "global.kawasaki.com", "www.wartsila.com" ]

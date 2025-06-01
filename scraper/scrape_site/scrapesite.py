@@ -11,9 +11,17 @@ import sys
 import os
 from urllib.parse import urlparse
 sys.path.append(os.path.dirname(__file__))  # or one level higher if needed
+import re
 
 import fieldrules
-
+import fitz  # PyMuPDF
+from io import BytesIO
+from urllib.parse import urljoin
+import json, re, asyncio
+import pyautogui
+import pyperclip
+from playwright.sync_api import sync_playwright
+import time
 
 class AsyncHTMLScraper:
     def __init__(self, urls, field_rules = fieldrules.field_rules_article_basic, start_date = None, end_date = None, apply_domain_rules = True, get_urls = False):
@@ -203,9 +211,25 @@ class AsyncHTMLScraper:
             return self.results
         return pd.DataFrame(self.results)
     
+    async def scrape_pdfs(self):
+        async with aiohttp.ClientSession() as session:
+            for url in self.urls:
+                try:
+                    url, pdf_bytes = await self.fetch_pdf(session, url)
+                    if pdf_bytes:
+                        try:
+                            text = self.decode_pdf_or_text(pdf_bytes)
+                            sections = self.extract_sections(text)
+                            self.results.append({"url": url, "text": text, **sections})
+                        except Exception:
+                            continue
+                except: continue
+                self.parsed_count += 1
+                
 
+                
     
-    
+        return self.results
     #Crawl paginated archives by appending ?page=N to each base URL until no results are found.
     #Stops early when a page returns empty field extraction.
     async def scrape_paginated_archives(self, base_urls=None, min_date=None, max_pages_fallback=30):
@@ -255,7 +279,23 @@ class AsyncHTMLScraper:
 
 ## this will be in a python file where field-rules are defined
 
+    def decode_pdf_or_text(self, pdf_bytes):
+        """
+        Detect if pdf_bytes is a real PDF or just text.
 
+        - If starts with %PDF-, treat as PDF file.
+        - Else decode as UTF-8 text.
+        """
+        if pdf_bytes[:5] == b"%PDF-":
+            # Assume it's a real PDF
+            doc = fitz.open(stream=BytesIO(pdf_bytes), filetype="pdf")
+            full_text = ""
+            for page in doc:
+                full_text += page.get_text()
+            return full_text
+        else:
+            # Plain text fallback
+            return pdf_bytes.decode('utf-8', errors='ignore')
 
     #made for maritime
     def extract_max_pages_maritime(self, html):
@@ -326,3 +366,382 @@ class AsyncHTMLScraper:
         else:
             print(f"⚠️ No custom rules found for {domain}, using existing field_rules.")
 
+
+
+
+
+
+    ########## for pdf-scraping
+
+
+
+
+
+   
+
+
+
+    async def fetch_pdf_with_playwright(self, url, retries: int = 3):
+        USER_AGENTS = [
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/124.0.0.0 Safari/537.36",
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) Firefox/114.0",
+        ]
+
+        for attempt in range(retries):
+            try:
+                async with async_playwright() as p:
+                    browser = await p.chromium.launch(headless=True)
+                    context = await browser.new_context(
+                        user_agent=random.choice(USER_AGENTS),
+                        java_script_enabled=True,
+                    )
+                    page = await context.new_page()
+                    await page.goto(url, timeout=30000)
+
+                    # Wait until the viewer injects the meta tag
+                    await page.wait_for_selector('meta[name="citation_pdf_url"]', timeout=10000)
+                    pdf_url = await page.get_attribute('meta[name="citation_pdf_url"]', "content")
+
+                    # same-origin fallback
+                    if pdf_url and not pdf_url.startswith("http"):
+                        pdf_url = urljoin(url, pdf_url)
+
+                    if not pdf_url:
+                        await browser.close()
+                        continue
+
+                    # Now download the PDF within Playwright (avoids cookie issues)
+                    async with context.request.get(pdf_url, timeout=30000) as response:
+                        if response.ok and "pdf" in response.headers.get("Content-Type", ""):
+                            pdf_bytes = await response.body()
+                            await browser.close()
+                            return url, pdf_bytes
+
+                    await browser.close()
+
+            except Exception as e:
+                print(f"⚠️  Playwright attempt {attempt+1} failed: {e}")
+
+        return url, None     # ALWAYS return a tuple
+
+
+
+    async def fetch_pdf_text_with_playwright(self, url):
+        print(f"🔁 [Playwright Fallback - Text Extraction] Trying to extract text from {url}")
+
+        USER_AGENTS = [
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/124.0.0.0 Safari/537.36",
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) Firefox/114.0",
+            "Mozilla/5.0 (Linux; Android 10; SM-G975F) Chrome/118.0.0.0 Mobile Safari/537.36",
+        ]
+
+        user_agent = random.choice(USER_AGENTS)
+
+        try:
+            async with async_playwright() as p:
+                browser = await p.chromium.launch(headless=True)
+                context = await browser.new_context(
+                    user_agent=user_agent,
+                    java_script_enabled=True,
+                )
+                page = await context.new_page()
+                await page.goto(url, timeout=30000)
+
+                await asyncio.sleep(3)  # Wait for page to load
+
+                try:
+                    # Try to extract text
+                    extracted_text = await page.evaluate("""() => {
+                        return document.body.innerText;
+                    }""")
+                except Exception as e:
+                    print(f"⚠️ Error extracting text: {e}")
+                    extracted_text = None
+
+                await browser.close()
+
+                if extracted_text and extracted_text.strip():
+                    print(f"✅ Successfully extracted text, length = {len(extracted_text)} characters")
+                    return url, extracted_text.encode('utf-8')
+                else:
+                    print(f"❌ No text extracted.")
+                    return url, None
+
+        except Exception as e:
+            print(f"❌ Total failure: {e}")
+            return url, None   # <- Always return (url, None) even if crash
+
+
+
+    async def _download_ieee_pdf_fast(self, session, viewer_url):
+        """
+        Try IEEE JSON API first, then <iframe src="…pdf"> inside stamp page.
+        Return (viewer_url, pdf_bytes | None)
+        """
+        # ---- 0) arnumber ----
+        m = re.search(r'/(\d+)\.pdf$', viewer_url)
+        if not m:
+            return viewer_url, None
+        ar = m.group(1)
+
+        # ---- 1) public JSON ----
+        api = f"https://ieeexplore.ieee.org/rest/document/{ar}"
+        try:
+            async with session.get(api, timeout=10) as r:
+                if r.status == 200:
+                    data = json.loads(await r.text())
+                    pdf_path = data.get("pdfUrl") or data.get("pdfPath")
+                    if pdf_path:
+                        pdf_url = urljoin("https://ieeexplore.ieee.org", pdf_path)
+                        async with session.get(pdf_url, timeout=25) as resp:
+                            if resp.status == 200 and "pdf" in resp.headers.get("Content-Type", ""):
+                                return viewer_url, await resp.read()
+        except Exception:
+            pass
+
+        # ---- 2) stamp page iframe ----
+        stamp = f"https://ieeexplore.ieee.org/stamp/stamp.jsp?tp=&arnumber={ar}"
+        _, html = await self.fetch(session, stamp, raise_on_header_error=True)
+        if not html:
+            return viewer_url, None
+        tree = HTMLParser(html)
+        frame = tree.css_first('iframe[src*=".pdf"]')
+        if frame:
+            pdf_url = urljoin(stamp, frame.attributes["src"])
+            async with session.get(pdf_url, timeout=25) as resp:
+                if resp.status == 200 and "pdf" in resp.headers.get("Content-Type", ""):
+                    return viewer_url, await resp.read()
+
+        return viewer_url, None
+
+
+    async def _copy_pdf_text_play_acting(self, viewer_url, *, timeout_ms=30000):
+        """
+        Visible Playwright tab, small mouse wiggle & Ctrl+A/C inside frame.
+        Returns (url, bytes or None).
+        """
+        from playwright.async_api import async_playwright
+
+        async with async_playwright() as p:
+            browser = await p.chromium.launch(headless=False)
+            context = await browser.new_context(
+                permissions=["clipboard-read", "clipboard-write"],
+                viewport={"width": 1280, "height": 900},
+            )
+            page = await context.new_page()
+            await page.goto(viewer_url, timeout=timeout_ms)
+
+            # wait until a frame navigates to *.pdf
+            def _pdf(f): return f.url and f.url.lower().endswith(".pdf")
+            try:
+                frame = await page.wait_for_event("framenavigated", predicate=_pdf, timeout=15000)
+            except Exception:
+                await browser.close(); return viewer_url, None
+
+            await page.wait_for_timeout(3000)  # let text render
+            await frame.keyboard.press("Control+A")
+            await frame.keyboard.press("Control+C")
+            txt = await page.evaluate("navigator.clipboard.readText()")
+            await browser.close()
+            return viewer_url, txt.encode() if txt.strip() else (viewer_url, None)
+
+
+    def extract_sections(self, text):
+        sections = {
+            "abstract": "",
+            "conclusion": "",
+            "references": ""
+        }
+
+        # Abstract — match only the first occurrence, non-greedy until next header
+        abstract_match = re.search(r'(?i)\babstract\b[\s:\-\.]*\n?(.*?)(\n[A-Z][^\n]{3,})', text, re.DOTALL)
+        if abstract_match:
+            sections["abstract"] = abstract_match.group(1).strip()
+
+        # Conclusion — non-greedy until next header
+        conclusion_match = re.search(r'(?i)\bconclusions?\b[\s:\-\.]*\n?(.*?)(\n[A-Z][^\n]{3,})', text, re.DOTALL)
+        if conclusion_match:
+            sections["conclusion"] = conclusion_match.group(1).strip()
+
+        # References — grab till end of document
+        references_match = re.search(r'(?i)\breferences\b[\s:\-\.]*\n?(.*)', text, re.DOTALL)
+        if references_match:
+            sections["references"] = references_match.group(1).strip()
+
+
+        return sections
+    ################## for pdf-scraping
+    # ──────────────────────────────────────────────────────────────────────────────
+
+    # ──────────────────────────────────────────────────────────────────────────────
+
+
+    # ──────────────────────────────────────────────────────────────────────────────
+    #  1) Same fast helper you already use (JSON + iframe download)
+    #     — unchanged, skip here for brevity —
+    #     name it   _download_ieee_pdf_fast(...)
+    # ──────────────────────────────────────────────────────────────────────────────
+
+
+
+    # ──────────────────────────────────────────────────────────────────────────────
+    #  2) Stage B — intercept any *application/pdf* response
+    # ──────────────────────────────────────────────────────────────────────────────
+    async def _download_ieee_pdf_intercept(self, viewer_url, *, timeout_ms=20000):
+        from playwright.async_api import async_playwright
+
+        pdf_bytes = None
+
+        async with async_playwright() as p:
+            browser = await p.chromium.launch(headless=True)
+            context = await browser.new_context()
+
+            # capture first PDF response
+            async def handle_response(resp):
+                nonlocal pdf_bytes
+                if (pdf_bytes is None
+                        and "application/pdf" in resp.headers.get("content-type", "")):
+                    try:
+                        pdf_bytes = await resp.body()
+                    except Exception:
+                        pass
+
+            context.on("response", handle_response)
+
+            page = await context.new_page()
+            await page.goto(viewer_url, timeout=timeout_ms)
+            await page.wait_for_timeout(5000)     # let pdf.js fire its request
+            await browser.close()
+
+        return viewer_url, pdf_bytes            # may be None
+    # ──────────────────────────────────────────────────────────────────────────────
+
+
+
+    # ──────────────────────────────────────────────────────────────────────────────
+    #  3) Stage C — mouse wiggle + Ctrl+A / Ctrl+C INSIDE Playwright
+    # ──────────────────────────────────────────────────────────────────────────────
+    async def _copy_pdf_text_real_browser_async(self, viewer_url, wait_sec=15):
+        """
+        Final fallback: opens a real visible Chrome tab (Playwright async),
+        clicks and does Ctrl+A, Ctrl+C inside the window.
+        No viewport calls — safe click at fixed coordinates.
+        """
+        from playwright.async_api import async_playwright
+        import pyperclip
+        async with async_playwright() as p:
+            browser = await p.chromium.launch(headless=False)
+            context = await browser.new_context(
+                permissions=["clipboard-read", "clipboard-write"],
+                viewport={"width": 1280, "height": 900},
+            )
+            page = await context.new_page()
+            await page.goto(viewer_url)
+            max_wait_time = 15
+            start_time  = time.time()
+            min_text_length = 10000
+            pyperclip.copy("")
+            while True:
+                elapsed = time.time() - start_time
+                if elapsed > max_wait_time:
+                    print("❌ Timeout: PDF did not finish loading in time.")
+                    break
+
+                try:
+                    # Check if at least 5 canvas elements exist
+                    canvas_count = await page.evaluate("document.querySelectorAll('canvas').length")
+                    print(f"🧐 Found {canvas_count} canvas elements so far...")
+
+                    if canvas_count >= 5:
+                        print("✅ PDF seems fully loaded!")
+                        break
+
+                except Exception as e:
+                    print(f"⚠️ Error checking canvas count: {e}")
+
+                # --- Random human-like action ---
+                action = random.choice(["scroll", "click", "move"])
+                if action == "scroll":
+                    delta = random.randint(100, 500)
+                    print(f"🖱️ Scrolling down by {delta}px...")
+                    await page.mouse.wheel(0, delta)
+                elif action == "click":
+                    x = random.randint(100, 800)
+                    y = random.randint(100, 800)
+                    print(f"🖱️ Clicking at ({x}, {y})...")
+                    await page.mouse.move(x, y)
+                    await page.mouse.click(x, y)
+                else:
+                    x = random.randint(100, 800)
+                    y = random.randint(100, 800)
+                    print(f"🖱️ Moving mouse to ({x}, {y})...")
+                    await page.mouse.move(x, y)
+                    await page.keyboard.down('Control')
+                await page.mouse.move(400, 500)
+                await page.mouse.click(400, 500)
+                await page.keyboard.down('Control')
+                await page.keyboard.press('KeyA')
+                await page.keyboard.up('Control')
+
+                await page.wait_for_timeout(500)
+
+                await page.keyboard.down('Control')
+                await page.keyboard.press('KeyC')
+                await page.keyboard.up('Control')
+
+                # Read clipboard
+                try:
+                    text = pyperclip.paste()
+                    text_length = len(text.strip())
+                    print(f"📋 Clipboard text length: {text_length}")
+                    if text_length >= min_text_length:
+                        print(f"✅ Enough text copied ({text_length} characters)!")
+                        break
+                except Exception as e:
+                    print(f"⚠️ Clipboard read error: {e}")
+                await asyncio.sleep(random.uniform(0.7, 1.5))
+
+ 
+            await page.wait_for_timeout(1000)
+
+            # Read clipboard
+            text = pyperclip.paste()
+            
+
+            await browser.close()
+
+        return viewer_url, text.encode("utf-8") if text.strip() else (viewer_url, None)
+
+
+
+    # ──────────────────────────────────────────────────────────────────────────────
+
+
+
+    # ──────────────────────────────────────────────────────────────────────────────
+    #  4) One public method that chains A → B → C
+    #     call this from scrape_pdfs()
+    # ──────────────────────────────────────────────────────────────────────────────
+    async def fetch_pdf(self, session, url):
+
+        # D) last-resort real browser + pyautogui clipboard (needs your screen/mouse)
+        url, data = await self._copy_pdf_text_real_browser_async(url)
+
+        if len(data) >= 10000:
+            print(f"✅ Text is long enough and contains 'abstract' and 'references'.")
+            return url, data
+        else:
+            print(f"❌ Fetched text failed validation (length={len(data)}).")
+            return url, None
+        
+if __name__ == "__main__":
+    
+    urls = ["https://maritime-executive.com/article/infamous-liner-turned-cruise-ship-to-be-sold-at-auction-77-years-after-mv"]
+   
+    pd.set_option('display.max_columns', None)  # Show al
+
+    f = AsyncHTMLScraper(urls)
+    content = asyncio.run(f.scrape())
+    df = pd.DataFrame(content, index=None)
+    df.to_csv("test.csv")
+    print(df)

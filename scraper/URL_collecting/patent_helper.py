@@ -9,12 +9,35 @@ from bs4 import BeautifulSoup
 from contextlib import contextmanager
 import re
 import pandas as pd
-
+from datetime import datetime
 import time
 
 
 
+def parse_mixed_date(date_str):
+    if not date_str:
+        return pd.NaT
 
+    date_str = date_str.strip()
+
+    # Try standard ISO first (YYYY-MM-DD)
+    try:
+        return pd.to_datetime(date_str, format="%Y-%m-%d")
+    except ValueError:
+        pass
+
+    # Try month abbreviation with dot (e.g. "Nov. 28, 2006")
+    try:
+        clean = date_str.replace(".", "")  # remove dot from month
+        return datetime.strptime(clean, "%b %d, %Y")
+    except ValueError:
+        pass
+
+    # Try general automatic parsing as fallback
+    try:
+        return pd.to_datetime(date_str, errors="coerce")
+    except Exception:
+        return pd.NaT
 
 def get_rendered_html(url, driver=None):
     close_driver = False
@@ -33,13 +56,33 @@ def get_rendered_html(url, driver=None):
         close_driver = True
 
     try:
+        print("This is the url", url)
         driver.get(url)
-        WebDriverWait(driver, 10).until(
-            EC.presence_of_element_located((By.TAG_NAME, "search-result-item"))
-        )
+
+        # Detect based on URL
+        if "patents.google.com" in url:
+            # Google Patents wait condition
+            WebDriverWait(driver, 10).until(
+                EC.presence_of_element_located((By.TAG_NAME, "search-result-item"))
+            )
+            
+        elif "scholar.google.com" in url:
+            print("wating for scholar")
+            # Google Scholar wait condition
+            WebDriverWait(driver, 10).until(
+                EC.presence_of_element_located((By.CSS_SELECTOR, "div.gs_r.gs_or.gs_scl"))
+            )
+            
+            
+
+        else:
+            # Default: just a basic wait to let the page load a bit
+            WebDriverWait(driver, 5)
+
         html = driver.page_source
+        print(f"Fetched HTML length: {len(html)}")
     except Exception as e:
-        print(f"[ERROR] Timeout or failure on: {url}")
+        print(f"[ERROR] {e} Timeout or failure on: {url}")
         html = driver.page_source
     finally:
         if close_driver:
@@ -63,7 +106,7 @@ def extract_total_results_google(html_text):
     return 0
 
 
-def extract_urls(soup_or_html, field_map):
+def extract_urls(soup_or_html, field_map, domain = "google_patents"):
     if isinstance(soup_or_html, str):
         soup = BeautifulSoup(soup_or_html, "html.parser")
     else:
@@ -72,7 +115,10 @@ def extract_urls(soup_or_html, field_map):
     results = []
 
     # Restrict to only actual <search-result-item> tags
-    items = soup.find_all("search-result-item")
+    if domain == "scholar":
+        items = soup.find_all("div", class_="gs_r gs_or gs_scl")
+    else:
+        items = soup.find_all("search-result-item")
 
     
     for item in items:

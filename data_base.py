@@ -19,7 +19,9 @@ class MongoHandler:
             "news": self.db["news"],
             "patents": self.db["patents"],
             "patents_urls": self.db["patents_urls"],
-            "news_urls": self.db["news_urls"]
+            "news_urls": self.db["news_urls"],
+            "studies": self.db["studies"],
+            "studies_urls": self.db["studies_urls"]
 
         }
 
@@ -98,7 +100,7 @@ class MongoHandler:
             filtered_df = filtered_df.drop_duplicates(subset=[id_field])
             filtered_df["_id"] = filtered_df[id_field] #create an id-field
             try:
-                date = "date" if domain == "news" else "priority_date"
+                date = "date" if domain == "news" or "studies" else "priority_date"
 
                 filtered_df["date"] = pd.to_datetime(filtered_df[date])
             except Exception as e:
@@ -137,13 +139,14 @@ class MongoHandler:
         while not domain_works:
             # Define expected fields for each domain
             domain_field_map = {
-                "news": {"url","title","date","text","image","scrape_time","keywords_kongsberg","keywords_maritime"},
-                "patents": {'abstract', 'claims', 'publication_date', 'cited_by', 'approx_expiration', 'citations', 'status', 'priority_date', '_id', 'keywords_kongsberg', 'description', 'scrape_time', 'date', 'title', 'url', 'keywords_maritime', 'keywords_kongsberg'},
-                "scientific_articles": {"url", "title", "date", "scraped", "doi"},
+                "news": {"_id","url","title","date","text","image","scrape_time","keywords_kongsberg","keywords_maritime"},
+                "patents": {'citations', 'approx_expiration', 'abstract', 'patent_code', 'date', 'similar_documents', 'keywords_maritime', 'scrape_time', '_id', 'title', 'application_granted', 'url', 'description', 'keywords_kongsberg', 'cited_by', 'publication_date', 'claims', 'status', 'priority_date'},
                 "blogs": {"url", "title", "date", "scraped"},
                 "social_media": {"url", "content", "date", "scraped", "platform"},
                 "news_urls": {"_id","headline","date", "url", "domain", "scraped"}, 
                 "patents_urls": {"_id","patent_code","priority_date","url", "domain", "scraped"},
+                "studies_urls": {"_id","title","date","url","authors","pdf_link","snippet","domain", "scraped"},
+                "studies": {"_id","title","date","url","authors","text","abstract","references","conclusion"}
             }
 
             # Extract actual fields from the first document
@@ -316,13 +319,13 @@ class MongoHandler:
         return doc
 
 if __name__ == "__main__":
-    data = pd.read_csv("news_2005-01-01_2015-01-01.csv")
-    
-    print(len(data))
+
     db = MongoHandler("mongodb+srv://maritime:Marko1324Polo@m0.cslrq4t.mongodb.net/?retryWrites=true&w=majority&appName=M0")
-    data =db.filter_out_scraped_df("news_urls", data, "url")
-    print(len(data))
-    docs = db.prepare_documents_from_df(data, ["url", "headline", "date", "domain", "scraped"], "url", "news")
-    db.insert_many_safe("news", docs)
+    data = pd.read_csv("sciense_data.csv")
+    
+    data=db.prepare_documents_from_df(data, ["title","date","url","pdf_link","domain","scraped"], domain = "studies")
+    db.insert_many_safe("studies_urls",data)
+
+
     
     

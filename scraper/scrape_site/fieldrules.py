@@ -1,5 +1,6 @@
 
-
+from urllib.parse import urljoin
+import re
 
 
 
@@ -27,6 +28,62 @@ field_rules_article_basic = {
 
     
 }
+field_rules_kawasaki = {
+    "title": lambda tree: tree.css_first('h1').text(strip=True) 
+             if tree.css_first('h1') else "",
+             
+    "date": lambda tree: tree.css_first('div.row.date p').text(strip=True) 
+             if tree.css_first('div.row.date p') else "",
+             
+    "text": lambda tree: "\n\n".join(
+        [p.text(strip=True) for p in tree.css('div#mainContentsArea p.pMargin_01') if p.text(strip=True)] +
+        [li.text(strip=True) for li in tree.css('div#mainContentsArea ol.list_03 li') if li.text(strip=True)]
+    ),
+    
+
+    "image": lambda tree: urljoin(
+        "https://global.kawasaki.com",
+        (tree.css_first('div.row.block img').attributes.get('src') or "")
+        if tree.css_first('div.row.block img') else ""
+    )
+
+}
+
+
+field_rules_wartsila = {
+
+    "title": (
+        lambda tree: (
+            tree.css_first('div.hero-image__section h1').text(strip=True)
+            if tree.css_first('div.hero-image__section h1') else ""
+        )
+    ),
+
+
+    "date": (
+        lambda tree: (
+            tree.css_first('div.metadata__date span').text(strip=True)
+            if tree.css_first('div.metadata__date span') else ""
+        )
+    ),
+
+    "text": (
+        lambda tree: "\n\n".join(
+            [p.text(strip=True) for p in tree.css('div.main-body-wrapper p') if p.text(strip=True)] +
+            [li.text(strip=True) for li in tree.css('div.main-body-wrapper li') if li.text(strip=True)]
+        )
+    ),
+
+    "image": (
+        lambda tree: urljoin(
+            "https://www.wartsila.com",
+            (
+                (img := tree.css_first('div#content-wrapper img.responsive-image'))
+                and (img.attributes.get('data-src') or img.attributes.get('src') or "")
+            ) or ""
+        )
+    ),
+}
 
 
 field_rules_oedigital = {
@@ -44,6 +101,42 @@ field_rules_oedigital = {
     "image": lambda tree: (
         tree.css_first(".images-wrapper img").attributes.get("src", "")
         if tree.css_first(".images-wrapper img") else ""
+    ),
+}
+
+
+field_rules_maritimeexec = {
+    "title": (
+        lambda tree: (
+            tree.css_first('h1.article-title').text(strip=True)
+            if tree.css_first('h1.article-title') else ""
+        )
+    ),
+    "date": (
+        lambda tree: (
+            (lambda t: re.sub(r'\s+', ' ',              # collapse whitespace
+                              re.sub(r'^(Published\s*)?|(\s*by.*$)', '', t)).strip()
+            )(
+                tree.css_first('p.datePublished').text()  # raw text
+            )
+            if tree.css_first('p.datePublished') else ""
+        )
+    ),
+    "text": (
+        lambda tree: "\n\n".join(
+            [p.text(strip=True) for p in tree.css('#article-container p') if p.text(strip=True)] +
+            [li.text(strip=True) for li in tree.css('#article-container li') if li.text(strip=True)]
+        )
+    ),
+
+    "image": (
+        lambda tree: urljoin(
+            "https://maritime-executive.com",
+            (
+                (img := tree.css_first('figure.image img'))
+                and (img.attributes.get('src') or "")
+            ) or ""
+        )
     ),
 }
 
@@ -118,6 +211,10 @@ DOMAIN_FIELD_RULES = {
     "patents.google.com": field_rules_google_patent,
     "www.marinelink.com": field_rules_article_basic,
     "www.oedigital.com":  field_rules_oedigital,
+    "global.kawasaki.com": field_rules_kawasaki,
+    "www.wartsila.com": field_rules_wartsila,
+    "maritime-executive.com": field_rules_maritimeexec
+
     # Add more domains as needed
 }
 

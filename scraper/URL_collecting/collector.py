@@ -14,6 +14,7 @@ import os
 import sources
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__),'../')))
 from scrape_site.scrapesite import AsyncHTMLScraper
+from urllib.parse import quote_plus
 
 
 class URL_collector:
@@ -33,6 +34,7 @@ class URL_collector:
             "date": date_range,
             "proportion_retrieved": 0.0
         }).set_index("date")
+        
 
     def get_urls_from_marine_link(self):
         # Field extraction rule for archive page
@@ -62,9 +64,13 @@ class URL_collector:
         ], ignore_index=True)
 
 
-    
+    def get_recent(self):
+        self.get_recent_news_simple()
+        self.get_google_patents()
+        self.get_urls_from_marine_link()
 
-    def get_recent_urls(self):
+
+    def get_recent_news_simple(self):
         domains = sources.domains
         print(domains)
         for dom in domains:
@@ -75,17 +81,14 @@ class URL_collector:
                 for cat in categories:
                     urls.append(f"{rules['url_base']}/{cat}")
             else: urls.append(rules['url_base'])
-            print(urls)
-            print(rules["field_rules"])
+
             
             scraper = AsyncHTMLScraper(urls, rules["field_rules"], apply_domain_rules=False, get_urls=True)
             scraper.semaphore = asyncio.Semaphore(1)
             raw_results = asyncio.run(scraper.scrape())
-            print(raw_results)
+            
             
             print("GOT raw result", len(raw_results))
-            print("Example raw result:", raw_results[0])
-            print("Type of first item:", type(raw_results[0]))
 
 
             self.news_data = pd.concat([
@@ -95,7 +98,104 @@ class URL_collector:
  
 
     
+    def get_google_scholar(self, search_term = "maritime"):
+
+
+        field_map = {
+            "title": lambda item: (
+                item.select_one("h3.gs_rt a").text.strip()
+                if item.select_one("h3.gs_rt a") else None
+            ),
+            "url": lambda item: (
+                item.select_one("h3.gs_rt a")["href"]
+                if item.select_one("h3.gs_rt a") and item.select_one("h3.gs_rt a").has_attr("href") else None
+            ),
+            "authors": lambda item: (
+                item.select_one(".gs_a").text.strip()
+                if item.select_one(".gs_a") else None
+            ),
+            "date": lambda item: (
+                extract_year(item.select_one(".gs_a").text)
+                if item.select_one(".gs_a") else None
+            ),
+            "pdf_link": lambda item: (
+                item.select_one(".gs_or_ggsm a")["href"]
+                if item.select_one(".gs_or_ggsm a") and item.select_one(".gs_or_ggsm a").has_attr("href") else None
+            ),
+            "snippet": lambda item: (
+                item.select_one(".gs_rs").text.strip()
+                if item.select_one(".gs_rs") else None
+            )
+        }
+
+       
+
+        def extract_year(text):
+            return None
         
+
+        QUERY = "marine propulsion"    # no quotes
+        NUM_PAGES = 20               # how many pages
+        SORT_BY_DATE = False            # True = sort by date, False = sort by relevance
+
+        base_url = "https://scholar.google.com/scholar"
+        sort_flag = "1" if SORT_BY_DATE else "0"
+
+
+
+        options = Options()
+        options.add_argument("--headless=new")
+        options.add_argument("--window-size=1920,1080")
+        driver = webdriver.Chrome(options=options)
+        year_low = self.start_date.year
+        year_high = self.end_date.year
+        for year in range(year_low,year_high+1):
+            time.sleep(random.uniform(4,12))
+            collected = []
+            for i in range(NUM_PAGES):
+                time.sleep(random.uniform(0.05,0.1))
+                start = i * 10
+                query_string = f"hl=fi&as_sdt=0%2C5&q={quote_plus(QUERY)}&btnG="
+                if SORT_BY_DATE:
+                    query_string += f"&scisbd={sort_flag}"
+                if start > 0:
+                    query_string += f"&start={start}"
+                query_string  += f"&as_ylo={year}&as_yhi={year}"
+                url = f"{base_url}?{query_string}"
+                
+                try:
+                    html = get_rendered_html(url, driver)
+                    soup = BeautifulSoup(html, "html.parser")
+                    data = extract_urls(soup,field_map, domain="scholar")
+                    if not data:
+                        break
+      
+                    print(f"[✓] Page {i + 1} scraped: {url}")
+                    print(f"Number of results: {len(data)}")
+                    year_date = f"{year}-01-01"
+                    for result in data:
+                        if result.get("date") is None:
+                            result["date"] = year_date
+                    collected.extend(data)
+                    time.sleep(random.uniform(0.2, 0.65))  # Sleep to be polite
+
+                except:
+                    print(f"skipping link {query_string}")
+            for item in collected:
+                item["domain"] = "scholar.google.com"
+                item["scraped"] = False
+
+            # Append to self.science_data
+            if collected:
+                year_df = pd.DataFrame(collected)
+                self.science_data = pd.concat([self.science_data, year_df], ignore_index=True)
+
+                
+
+
+
+
+
 
     def get_google_patents(self, search_term="maritime"):
         field_map = {
@@ -229,9 +329,13 @@ class URL_collector:
     def _flatten_news_results(self, results, domain):
         
         rows = []
+        print(results)
         for result in results:
             for article in result.get("articles", []):
-                date = pd.to_datetime(article.get("date"), errors="coerce")
+                
+                raw_date = article.get("date")
+
+                date = parse_mixed_date(raw_date)
                 if pd.notna(date) and self.start_date <= date <= self.end_date:
                     rows.append({
                         "headline": article["headline"],
@@ -240,22 +344,34 @@ class URL_collector:
                         "domain": domain,
                         "scraped": False
                     })
-
+                else:
+                    pass
+            
         return pd.DataFrame(rows)
 
 
 if __name__ == "__main__":
 
-    pass
-    #collector = URL_collector("2005-01-01", "2015-01-01", urls_per_day=5)
-    #collector.get_recent_urls()
+    
+    
 
+
+    collector = URL_collector("2000-01-01", "2021-12-01", urls_per_day=5)
+
+    collector.get_google_scholar()
+    data = collector.science_data
+    data.to_csv("sciense_data.csv")
+
+    #collector.get_recent_news()
+    #urls = collector.news_data
+    #print(urls)
+    #urls.to_csv("test.csv")
 
     # Define your collections
-    #start_date = "2005-01-01"
-    #end_date = "2015-01-01"
+    start_date = "1995-01-01"
+    end_date = "2025-12-12"
     #collector = URL_collector(start_date, end_date, urls_per_day=5)
-    #collector.get_urls_from_marine_link()
+    #collector.get_google_patents()
     #path = f"news_{start_date}_{end_date}.csv"
     #
     #collector.news_data.to_csv(path, index=False)

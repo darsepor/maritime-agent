@@ -18,5 +18,8 @@ selenium
 pymongo
 python-dateutil
 pyarrow
+
 langchain-huggingface
 lark
+pymupdf
+
