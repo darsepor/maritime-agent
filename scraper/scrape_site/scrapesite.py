@@ -18,7 +18,7 @@ import fitz  # PyMuPDF
 from io import BytesIO
 from urllib.parse import urljoin
 import json, re, asyncio
-import pyautogui
+#import pyautogui
 import pyperclip
 from playwright.sync_api import sync_playwright
 import time

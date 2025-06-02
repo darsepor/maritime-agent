@@ -6,10 +6,6 @@ import os
 
 app = FastAPI()
 
-MONGO_URI = "your_mongodb_connection_string"
-DB_NAME = "your_database"
-COLLECTION_NAME = "your_collection"
-
 @app.get("/")
 def home():
     return {"message": "API is running"}
@@ -21,7 +17,6 @@ def run_scraper():
 
 @app.post("/build-vector-store")
 def build_vector_store():
-    # You could optionally pull from MongoDB and write to a new .csv here
     result = run(["python", "build_vector_store.py"])
     return {"status": "vector store built", "return_code": result.returncode}
 

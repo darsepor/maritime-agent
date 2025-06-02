@@ -51,3 +51,15 @@ Retrieval-Augmented Generation (RAG) system for analyzing maritime documents usi
     *   Output is saved to `analysis_report_langchain.pdf`.
 
 Refer to console output for error diagnostics.
+
+## Other
+
+Find UI implementation here: https://github.com/Finsaki/quick-construct-toolkit-57
+
+Run FastAPI server to interact with UI with
+
+```
+uvicorn main_api:app --reload
+```
+
+The FastAPI server runs on port 8000 by default, UI runs on port 8080 by default

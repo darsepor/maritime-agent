@@ -22,4 +22,8 @@ pyarrow
 langchain-huggingface
 lark
 pymupdf
+pyperclip
 
+fastapi
+uvicorn
+python-multipart
