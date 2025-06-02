@@ -67,11 +67,20 @@ def run_analysis_pipeline(query: str):
     #     return
 
     try:
-        main_llm_for_answer = get_llm(temperature=0.7, include_thoughts_in_response=True)
-        reranking_llm = get_llm(temperature=0.3)
-        decomposition_llm = get_llm(temperature=0.4) 
-        broad_query_llm = get_llm(temperature=0.4)   
-        filter_generation_llm = get_llm(temperature=0.0) 
+        from config import SMALL_MODEL_NAME, LARGE_MODEL_NAME
+
+        # Pro model for the final, polished answer
+        main_llm_for_answer = get_llm(
+            temperature=0.7,
+            include_thoughts_in_response=True,
+            model_name=LARGE_MODEL_NAME,
+        )
+
+        # Fast & cheaper Flash model for all intermediate steps
+        reranking_llm = get_llm(temperature=0.3, model_name=SMALL_MODEL_NAME)
+        decomposition_llm = get_llm(temperature=0.4, model_name=SMALL_MODEL_NAME)
+        broad_query_llm = get_llm(temperature=0.4, model_name=SMALL_MODEL_NAME)
+        filter_generation_llm = get_llm(temperature=0.0, model_name=SMALL_MODEL_NAME)
     except Exception as e:
         print(f"Failed to initialize LLMs: {e}")
         return
@@ -151,13 +160,62 @@ def run_analysis_pipeline(query: str):
         current_date_for_analysis=current_date_str # New optional param for PDF
     )
 
+    # After generating the PDF, attempt to send it via email if SMTP settings are configured
+    try:
+        from config import (
+            EMAIL_SMTP_SERVER,
+            EMAIL_SMTP_PORT,
+            EMAIL_USERNAME,
+            EMAIL_PASSWORD,
+            EMAIL_SENDER,
+            EMAIL_RECIPIENTS,
+        )
+        from email_utils import send_email_with_attachment
+
+        # Only proceed if essential SMTP settings and at least one recipient are provided
+        if (
+            EMAIL_SMTP_SERVER
+            and EMAIL_USERNAME
+            and EMAIL_PASSWORD
+            and EMAIL_RECIPIENTS
+        ):
+            recipients_list = [addr.strip() for addr in EMAIL_RECIPIENTS.split(",") if addr.strip()]
+
+            if not recipients_list:
+                print("Email not sent: EMAIL_RECIPIENTS is set but no valid recipients were found.")
+            else:
+                email_subject = (
+                    f"Newsletter: {query[:60]}..." if len(query) > 60 else f"Newsletter: {query}"
+                )
+                email_body = (
+                    f"Hello,\n\nPlease find attached the latest newsletter generated on {generation_date_for_pdf}.\n\nBest regards,\nMaritime Agent"
+                )
+
+                send_email_with_attachment(
+                    subject=email_subject,
+                    body=email_body,
+                    to_emails=recipients_list,
+                    attachment_path=PDF_OUTPUT_FILENAME,
+                    smtp_server=EMAIL_SMTP_SERVER,
+                    smtp_port=EMAIL_SMTP_PORT,
+                    smtp_username=EMAIL_USERNAME,
+                    smtp_password=EMAIL_PASSWORD,
+                    sender_email=EMAIL_SENDER,
+                    use_tls=EMAIL_SMTP_PORT != 465,  # Heuristic: port 465 often implies implicit SSL
+                )
+                print("Newsletter sent successfully via email.")
+        else:
+            print("Email not sent: Missing SMTP configuration in environment variables.")
+    except Exception as email_error:
+        print(f"Failed to send email: {email_error}")
+
     print("\n--- Analysis Pipeline Finished ---")
 
 if __name__ == "__main__":
     if len(sys.argv) > 1:
         user_query = " ".join(sys.argv[1:])
     else:
-        user_query = "Tell me how the shipping industry has evolved in the past 10 years, globally and in the Nordics."
+        user_query = "Write a newsletter for the marketing department of Kongsberg Maritime about how the shipping industry has evolved in the past couple of years, globally and in the Nordics."
         # user_query = "What are the latest developments in autonomous shipping in the Nordics? Also include info on sustainable maritime fuels."
         print(f"No query provided, using default: '{user_query}'")
 

@@ -34,12 +34,19 @@ except ImportError:
     ALL_KONGSBERG_KEYWORDS = ["kongsberg", "autonomous", "defense", "remote weapon system", "sonar system"]
     ALL_MARITIME_KEYWORDS = ["ship", "port", "vessel", "navigation", "engine", "autonomous ship", "hull", "IMO"]
 
-def get_llm(temperature: float = 0.7, include_thoughts_in_response: bool = False):
-    """Initializes the Gemini LLM with configurable temperature and include_thoughts."""
-    print(f"Initializing LLM: {GEMINI_MODEL_NAME} with temp: {temperature}, include_thoughts: {include_thoughts_in_response}")
+def get_llm(temperature: float = 0.7, include_thoughts_in_response: bool = False, model_name: str | None = None):
+    """Initializes the Gemini LLM.
+
+    Args:
+        temperature: Sampling temperature.
+        include_thoughts_in_response: Whether to request Gemini 'thoughts' streaming.
+        model_name: Override the default model set in config. If None, uses GEMINI_MODEL_NAME.
+    """
+    chosen_model = model_name or GEMINI_MODEL_NAME
+    print(f"Initializing LLM: {chosen_model} with temp: {temperature}, include_thoughts: {include_thoughts_in_response}")
     try:
         model_params = {
-            "model": GEMINI_MODEL_NAME,
+            "model": chosen_model,
             "google_api_key": GEMINI_API_KEY,
         }
         # For the main LLM (temp 0.7), try with minimal params first.
