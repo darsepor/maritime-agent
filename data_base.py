@@ -9,6 +9,8 @@ import processor
 import numpy as np
 from bson.objectid import ObjectId
 from dateutil import parser as date_parser
+import os
+from dotenv import load_dotenv
 
 
 class MongoHandler:
@@ -320,11 +322,20 @@ class MongoHandler:
 
 if __name__ == "__main__":
 
-    db = MongoHandler("mongodb+srv://maritime:Marko1324Polo@m0.cslrq4t.mongodb.net/?retryWrites=true&w=majority&appName=M0")
-    data = pd.read_csv("sciense_data.csv")
-    
-    data=db.prepare_documents_from_df(data, ["title","date","url","pdf_link","domain","scraped"], domain = "studies")
-    db.insert_many_safe("studies_urls",data)
+
+    load_dotenv()
+    mongo_uri = os.getenv("MONGO_URI")
+    if not mongo_uri:
+        raise ValueError("Set MONGO_URI in your .env before running this demo script.")
+
+    csv_path = "sciense_data.csv"
+    if not os.path.isfile(csv_path):
+        raise FileNotFoundError(f"{csv_path} not found. Provide the dataset before running.")
+
+    db = MongoHandler(mongo_uri)
+    df = pd.read_csv(csv_path)
+    docs = db.prepare_documents_from_df(df, ["title", "date", "url", "pdf_link", "domain", "scraped"], domain="studies")
+    db.insert_many_safe("studies_urls", docs)
 
 
     

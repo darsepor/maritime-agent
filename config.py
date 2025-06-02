@@ -7,7 +7,9 @@ load_dotenv() # Load variables from .env file
 EMBEDDING_MODEL_NAME = 'all-MiniLM-L6-v2' # Or another suitable model
 VECTOR_STORE_PATH = "./faiss_store" # Directory to persist FAISS data
 
-MONGO_URI = "mongodb+srv://maritime:Marko1324Polo@m0.cslrq4t.mongodb.net/?retryWrites=true&w=majority&appName=M0"
+MONGO_URI = os.getenv("MONGO_URI")
+if not MONGO_URI:
+    raise ValueError("MONGO_URI not found in environment variables. Please set it in the .env file.")
 MONGO_DATABASE_NAME = "maritime_data" # Or whatever your database name is
 NEWS_COLLECTION_NAME = "news"
 PATENTS_COLLECTION_NAME = "patents"

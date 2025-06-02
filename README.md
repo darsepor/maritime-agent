@@ -74,6 +74,7 @@ pip install -r requirements.txt
 ```env
 # ------------ CORE ------------
 GEMINI_API_KEY=yourGeminiKeyHere
+MONGO_URI="mongodb+srv://<user>:<password>@cluster.mongodb.net/?retryWrites=true&w=majority"
 
 # ------------ SMTP  (optional) ------------
 EMAIL_SMTP_SERVER=smtp.gmail.com
