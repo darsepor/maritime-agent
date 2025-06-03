@@ -1,6 +1,6 @@
 # Maritime Agent
 
-RAG assistant-agent-researcher for maritime market intelligence -- a solution to a course challenge provided by Kongsberg Maritime. This project has been made, designed, and presented by Darijus Seporaitis, and contributors who will consent to have their names on here.
+RAG assistant-agent-researcher for maritime market intelligence -- a solution to a course challenge provided by Kongsberg Maritime. This project has been made, designed, and presented by Darijus Seporaitis, Ville Palola, Aki Koppinen, Keito Sadamatsu, Tzu-chun Wang
 
 ---
 ## 1. High-Level Architecture
