@@ -18,11 +18,43 @@ RAG assistant-agent-researcher for maritime market intelligence -- a solution to
 
 Graphical flow:
 ```
-[Mongo Docs] ─► build_vector_store.py ─► [FAISS Index]
-                                 │
-                     (query)     ▼
-User ─► main.py ─► RAG Chain ─► Gemini-2.5-pro ─► PDF ─► Gmail/SMTP
+User Query
+   │
+   ▼
+┌──────────────────────┐
+│ 1️⃣ Query Decomposition (flash) │  ← splits complex question into sub-queries + broad sweep
+└──────────────────────┘
+   │ sub-queries
+   ▼
+┌──────────────────────┐
+│ 2️⃣ Parallel Retrieval (FAISS) │  ← each sub-query + broad query hits the vector index
+└──────────────────────┘
+   │ chunks
+   ▼
+┌──────────────────────┐
+│ 3️⃣ LLM Rerank (flash) │  ← filters chunks to those truly relevant
+└──────────────────────┘
+   │ curated chunks
+   ▼
+┌──────────────────────────────┐
+│ 4️⃣ Full-Document Fetch (Mongo) │  ← swap chunks for full articles / patents
+└──────────────────────────────┘
+   │ context
+   ▼
+┌──────────────────────┐
+│ 5️⃣ Gemini-Pro Answer │  ← crafts final answer + thoughts
+└──────────────────────┘
+   │
+   ▼
+PDF Report → optional SMTP Email
 ```
+
+**Key points**
+• Steps 1-4 run on the fast Flash model for cost/speed; only the final answer (step 5) uses the higher-quality Pro model.
+• Vector search uses FAISS on sentence-transformer embeddings; metadata filters are built via LangChain's Self-Query retriever.
+• Reranking LLM keeps only the chunks that actually answer the user's intent, cutting noise.
+• Full documents are pulled from MongoDB so the final prompt has complete context, not snippets.
+• The resulting answer and citations are laid out as a PDF and optionally mailed as a newsletter.
 
 ---
 ## 2. Command Reference
