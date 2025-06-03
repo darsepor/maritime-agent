@@ -5,6 +5,8 @@ import time
 import os # For reading/writing timestamp file
 import datetime # For generating current timestamp
 from dateutil import parser as date_parser # For parsing stored timestamp
+import pickle
+import numpy as np
 
 # Use the existing functions/config for loading, chunking, embeddings
 from data_loader import load_and_chunk_documents
@@ -12,7 +14,6 @@ from vector_store_utils import get_embedding_function
 from config import VECTOR_STORE_PATH, LAST_BUILD_TIMESTAMP_PATH, MONGO_URI, MONGO_DATABASE_NAME
 from data_base import MongoHandler # For counting documents
 from langchain_community.vectorstores import FAISS
-import pickle
 
 # from pickle_utils import save_pickle # Removed pickle_utils import
 
@@ -88,7 +89,6 @@ def main(data_types_to_process="all", overall_doc_limit_per_type=0):
             from langchain_community.vectorstores.faiss import FAISS as FAISSStore
             from langchain_community.vectorstores.utils import DistanceStrategy
             import faiss
-            import numpy as np
             # Define the dimension of embeddings (based on all-MiniLM-L6-v2, it's 384)
             dimension = 384
             # Create a FAISS index manually
@@ -178,94 +178,89 @@ def main(data_types_to_process="all", overall_doc_limit_per_type=0):
             print(f"Loaded and chunked {len(chunked_docs)} chunks from {doc_type} batch.")
             
             # --- Start: Processing for this batch of chunks ---
-    ids = []
-    documents_content = []
-            metadatas_list = [] # Renamed from metadatas to avoid conflict
-    embeddings_list = []
+            ids = []
+            documents_content = []
+            metadatas_list = []
+            embeddings_list = []
 
             print("Generating embeddings for current batch...")
-    try:
-        all_chunk_texts = [chunk.page_content for chunk in chunked_docs]
-        if not all_chunk_texts:
+            try:
+                all_chunk_texts = [chunk.page_content for chunk in chunked_docs]
+                if not all_chunk_texts:
                     print("No text content in current chunk batch. Skipping.")
                     current_skip += limit_for_this_batch
-                    processed_doc_counts[doc_type] += limit_for_this_batch # Assume docs were "processed" by skipping
+                    processed_doc_counts[doc_type] += limit_for_this_batch
                     continue
-                
-                # Assuming embeddings_model is defined and initialized earlier
-        all_embeddings = embeddings_model.embed_documents(all_chunk_texts)
-        if len(all_embeddings) != len(chunked_docs):
+
+                all_embeddings = embeddings_model.embed_documents(all_chunk_texts)
+                if len(all_embeddings) != len(chunked_docs):
                     raise ValueError("Mismatch between number of chunks and generated embeddings in batch.")
-    except Exception as e:
+            except Exception as e:
                 print(f"Error generating embeddings for batch: {e}. Skipping this batch.")
                 current_skip += limit_for_this_batch
                 processed_doc_counts[doc_type] += limit_for_this_batch
                 continue
 
             for i_chunk, chunk in enumerate(chunked_docs):
-        if not chunk.page_content:
+                if not chunk.page_content:
                     print(f"Warning: Chunk has empty content. Skipping. Metadata: {chunk.metadata}")
-            continue
-            
-        deterministic_id = generate_deterministic_id(chunk.page_content + str(chunk.metadata.get('mongo_id')))
-        ids.append(deterministic_id)
-        documents_content.append(chunk.page_content)
-                
+                    continue
+
+                deterministic_id = generate_deterministic_id(chunk.page_content + str(chunk.metadata.get('mongo_id')))
+                ids.append(deterministic_id)
+                documents_content.append(chunk.page_content)
+
                 sanitized_meta = {}
                 for key, value in chunk.metadata.items():
                     if isinstance(value, list):
                         sanitized_meta[key] = str(value)
                     elif value is None:
-                        sanitized_meta[key] = "" 
+                        sanitized_meta[key] = ""
                     else:
                         sanitized_meta[key] = value
                 metadatas_list.append(sanitized_meta)
                 embeddings_list.append(all_embeddings[i_chunk])
 
-    if not ids:
+            if not ids:
                 print("No valid data to upsert from this batch. Continuing.")
                 current_skip += limit_for_this_batch
-                processed_doc_counts[doc_type] += limit_for_this_batch # Count as processed
+                processed_doc_counts[doc_type] += limit_for_this_batch
                 continue
 
-            # Filter duplicates (within this batch - less effective than global but better than nothing for now)
-    unique_data_store = {}
-    filtered_ids = []
-    filtered_embeddings = []
-            filtered_metadatas_batch = [] # Renamed
-            filtered_documents_batch = [] # Renamed
+            # Filter duplicates (within this batch)
+            unique_data_store = {}
+            filtered_ids = []
+            filtered_embeddings = []
+            filtered_metadatas_batch = []
+            filtered_documents_batch = []
 
             for i_unique, doc_id in enumerate(ids):
-        if doc_id not in unique_data_store:
-            unique_data_store[doc_id] = True
-            filtered_ids.append(doc_id)
+                if doc_id not in unique_data_store:
+                    unique_data_store[doc_id] = True
+                    filtered_ids.append(doc_id)
                     filtered_embeddings.append(embeddings_list[i_unique])
                     filtered_metadatas_batch.append(metadatas_list[i_unique])
                     filtered_documents_batch.append(documents_content[i_unique])
-            
+
             print(f"Filtered down to {len(filtered_ids)} unique items in this batch for upsert.")
 
             if filtered_ids:
-                # FAISS batch add (using add_embeddings directly with pre-computed embeddings)
                 print(f"Adding {len(filtered_ids)} items to FAISS store...")
                 try:
-                    # Convert embeddings to list of lists if they're numpy arrays
                     embeddings_for_faiss = [emb.tolist() if isinstance(emb, np.ndarray) else emb for emb in filtered_embeddings]
-                    # Use add_embeddings to directly add pre-computed embeddings
                     faiss_store.add_embeddings(
                         text_embeddings=list(zip(filtered_documents_batch, embeddings_for_faiss)),
                         metadatas=filtered_metadatas_batch,
                         ids=filtered_ids
                     )
-                    print(f"FAISS batch added successfully.")
+                    print("FAISS batch added successfully.")
                     total_chunks_processed_overall += len(filtered_ids)
                 except Exception as e:
                     print(f"Error adding batch to FAISS store: {e}. Skipping this batch.")
-                    # Potentially add retry logic here or log failed IDs
-            
+
             # --- End: Processing for this batch of chunks ---
-            current_skip += limit_for_this_batch # Advance skip for the current doc_type
-            processed_doc_counts[doc_type] += limit_for_this_batch # Count actual MongoDB docs processed
+            current_skip += limit_for_this_batch
+            processed_doc_counts[doc_type] += limit_for_this_batch
             print(f"Completed processing raw document batch for {doc_type}. Processed so far for this type: {current_skip}/{docs_to_fetch_for_type}")
 
         print(f"--- Finished processing document type: {doc_type.upper()}. Total processed for this type: {processed_doc_counts[doc_type]} raw documents ---")
@@ -277,14 +272,15 @@ def main(data_types_to_process="all", overall_doc_limit_per_type=0):
     
     # Write timestamp only if the entire process (or a significant portion) seems successful.
     # This condition might need refinement.
-    if total_chunks_processed_overall > 0 or (last_build_ts is None and sum(processed_doc_counts.values()) == 0) : # if it's a first run and no docs, still update.
+    if total_chunks_processed_overall > 0 or (
+        last_build_ts is None and sum(processed_doc_counts.values()) == 0
+    ):
         write_current_build_timestamp(LAST_BUILD_TIMESTAMP_PATH)
-        # Save the FAISS index to disk
         try:
             print(f"Saving FAISS index to {index_path}...")
             faiss_store.save_local(index_path)
-            print(f"FAISS index saved successfully.")
-    except Exception as e:
+            print("FAISS index saved successfully.")
+        except Exception as e:
             print(f"Error saving FAISS index: {e}. Index not saved, but process completed.")
     else:
         print("No new chunks were processed and added. Timestamp not updated.")
